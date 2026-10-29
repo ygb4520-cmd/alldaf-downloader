@@ -1,8 +1,8 @@
 """AllDaf Shiur Downloader: download every shiur by one speaker on one mesechta.
-Needs only Python 3 (tkinter is included with the python.org installer). Run:  python alldaf_downloader.py
+Files go to <folder>\\<speaker>\\<mesechta>\\. Needs only Python 3. Run:  python alldaf_downloader.py
 """
-import json, os, queue, re, ssl, threading, time
-import urllib.parse, urllib.request
+import json, os, queue, re, ssl, subprocess, sys, threading, time
+import urllib.parse, urllib.request, webbrowser
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
@@ -10,6 +10,16 @@ from tkinter import ttk, filedialog, messagebox, simpledialog
 API = "https://alldaf.org/api/trpc/posts.fetchList"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 SSL_CTX = None  # set from the checkbox before each run
+VERSION = "1.1"  # bump this (and the release tag) when you publish a new .exe
+REPO = "ygb4520-cmd/alldaf-downloader"
+CONFIG = Path.home() / ".alldaf_downloader.json"
+# Spellings copied from the mesechta list on alldaf.org
+MASECHTOS = ["Berachos", "Shabbos", "Eruvin", "Pesachim", "Shekalim", "Yoma", "Succah", "Beitzah",
+             "Rosh Hashanah", "Taanis", "Megilah", "Moed Katan", "Chagiga", "Yevamos", "Kesuvos",
+             "Nedarim", "Nazir", "Sotah", "Gitin", "Kidushin", "Bava Kama", "Bava Metzia", "Bava Basra",
+             "Sanhedrin", "Makos", "Shevuos", "Avodah Zarah", "Horayos", "Zevachim", "Menachos", "Chulin",
+             "Bechoros", "Erchin", "Temurah", "Kerisus", "Meilah", "Nidah"]
+DEFAULT_SPEAKERS = [{"name": "Rabbi Zecharia Resnik", "id": 133821}]
 
 
 def make_ctx(skip_check):
@@ -20,14 +30,66 @@ def make_ctx(skip_check):
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
     return ctx
-CONFIG = Path.home() / ".alldaf_downloader.json"
-# Spellings copied from the mesechta list on alldaf.org
-MASECHTOS = ["Berachos", "Shabbos", "Eruvin", "Pesachim", "Shekalim", "Yoma", "Succah", "Beitzah",
-             "Rosh Hashanah", "Taanis", "Megilah", "Moed Katan", "Chagiga", "Yevamos", "Kesuvos",
-             "Nedarim", "Nazir", "Sotah", "Gitin", "Kidushin", "Bava Kama", "Bava Metzia", "Bava Basra",
-             "Sanhedrin", "Makos", "Shevuos", "Avodah Zarah", "Horayos", "Zevachim", "Menachos", "Chulin",
-             "Bechoros", "Erchin", "Temurah", "Kerisus", "Meilah", "Nidah"]
-DEFAULT_SPEAKERS = [{"name": "Rabbi Zecharia Resnik", "id": 133821}]
+
+
+def check_for_update(skip_ssl):
+    """Return a dict with tag, page, exe_url if the latest GitHub release is newer than VERSION, else None."""
+    req = urllib.request.Request(f"https://api.github.com/repos/{REPO}/releases/latest",
+                                 headers={"User-Agent": "AllDaf-Downloader",
+                                          "Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(req, timeout=10, context=make_ctx(skip_ssl)) as r:
+        data = json.load(r)
+
+    def parse(v):
+        return tuple(int(x) for x in re.findall(r"\d+", v))
+
+    tag = data.get("tag_name", "")
+    if not tag or parse(tag) <= parse(VERSION):
+        return None
+    exe_url = next((a.get("browser_download_url") for a in data.get("assets", [])
+                    if a.get("name", "").lower().endswith(".exe")), None)
+    return {"tag": tag, "page": data.get("html_url", f"https://github.com/{REPO}/releases"),
+            "exe_url": exe_url}
+
+
+def download_update(exe_url, skip_ssl):
+    """Download the new .exe next to the running one, then swap the files."""
+    current = Path(sys.executable)
+    new = current.with_name(current.stem + ".new.exe")
+    old = current.with_name(current.stem + ".old.exe")
+    req = urllib.request.Request(exe_url, headers=HEADERS)
+    with urllib.request.urlopen(req, timeout=60, context=make_ctx(skip_ssl)) as r, open(new, "wb") as out:
+        while True:
+            chunk = r.read(65536)
+            if not chunk:
+                break
+            out.write(chunk)
+    # Windows lets a running .exe be renamed but not overwritten, so move the old one aside first
+    try:
+        old.unlink()
+    except OSError:
+        pass
+    os.replace(current, old)
+    try:
+        os.replace(new, current)
+    except Exception:
+        os.replace(old, current)  # put the old version back if the swap fails
+        raise
+    return current
+
+
+def cleanup_old_exe():
+    """Remove the previous version left behind by an update (it isn't running now)."""
+    if getattr(sys, "frozen", False):
+        exe = Path(sys.executable)
+        try:
+            exe.with_name(exe.stem + ".old.exe").unlink()
+        except OSError:
+            pass
+
+
+def safe_name(s):
+    return re.sub(r'[\\/:*?"<>|]', "_", s).strip()
 
 
 def fmt_eta(s):
@@ -98,6 +160,9 @@ class App:
         self.stop_btn = ttk.Button(bf, text="Stop", command=self.stop.set, state="disabled")
         self.stop_btn.pack(side="left", padx=5)
         ttk.Checkbutton(bf, text="Skip SSL check (proxy)", variable=self.skip_ssl).pack(side="left", padx=5)
+        ttk.Button(bf, text="Check for updates", command=lambda: threading.Thread(
+            target=self.update_check, kwargs={"manual": True, "skip_ssl": self.skip_ssl.get()}, daemon=True).start()
+        ).pack(side="left", padx=5)
 
         self.bar = ttk.Progressbar(f, maximum=100)
         self.bar.grid(row=5, column=0, columnspan=3, sticky="ew", pady=3)
@@ -109,6 +174,28 @@ class App:
         f.rowconfigure(8, weight=1)
         root.protocol("WM_DELETE_WINDOW", self.close)
         self.poll()
+        threading.Thread(target=self.update_check, kwargs={"skip_ssl": self.skip_ssl.get()}, daemon=True).start()
+
+    # ---------- updates ----------
+    def update_check(self, manual=False, skip_ssl=True):
+        try:
+            found = check_for_update(skip_ssl)
+        except Exception as e:
+            if manual:
+                self.q.put(("notice", f"Couldn't check for updates: {e}"))
+            return
+        if found:
+            self.q.put(("update", found["tag"], found["page"], found["exe_url"], skip_ssl))
+        elif manual:
+            self.q.put(("notice", f"You have the latest version ({VERSION})."))
+
+    def apply_update(self, tag, exe_url, skip_ssl):
+        try:
+            self.q.put(("progress", 0, f"Downloading update {tag}...", ""))
+            download_update(exe_url, skip_ssl)
+            self.q.put(("restart", tag))
+        except Exception as e:
+            self.q.put(("notice", f"Update failed: {e}\n\nYou can download it from the release page instead."))
 
     # ---------- settings ----------
     def save_cfg(self):
@@ -181,7 +268,7 @@ class App:
         self.start_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
         self.bar["value"] = 0
-        args = (spk["id"], mas, self.mode.get(), Path(self.folder.get()).expanduser())
+        args = (spk["id"], spk["name"], mas, self.mode.get(), Path(self.folder.get()).expanduser())
         threading.Thread(target=self.worker, args=args, daemon=True).start()
 
     def say(self, text):
@@ -193,7 +280,8 @@ class App:
             inp = {"0": {"take": 12, "skip": skip, "platform": "AllDaf", "masechta": masechta, "search": "",
                          "authorId": author_id, "sort": [{"field": "createdAt", "dir": "desc"}]}}
             url = API + "?batch=1&input=" + urllib.parse.quote(json.dumps(inp, separators=(",", ":")), safe="")
-            with urllib.request.urlopen(urllib.request.Request(url, headers=HEADERS), timeout=30, context=SSL_CTX) as r:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=HEADERS), timeout=30,
+                                        context=SSL_CTX) as r:
                 data = json.load(r)[0]["result"]["data"]
             page = data.get("records") or []
             total = data.get("total", 0) if total is None else total
@@ -207,8 +295,8 @@ class App:
     def download(self, url, path, on_frac):
         part = path.with_name(path.name + ".part")
         try:
-            with urllib.request.urlopen(urllib.request.Request(url, headers=HEADERS), timeout=30, context=SSL_CTX) as r, \
-                    open(part, "wb") as out:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=HEADERS), timeout=30,
+                                        context=SSL_CTX) as r, open(part, "wb") as out:
                 size, got = int(r.headers.get("Content-Length") or 0), 0
                 while not self.stop.is_set():
                     chunk = r.read(65536)
@@ -228,9 +316,10 @@ class App:
                 except OSError:
                     pass
 
-    def worker(self, author_id, masechta, mode, folder):
+    def worker(self, author_id, speaker_name, masechta, mode, base_folder):
         summary = "Finished."
         try:
+            folder = base_folder / safe_name(speaker_name) / safe_name(masechta)
             folder.mkdir(parents=True, exist_ok=True)
             recs = [r for r in self.fetch(author_id, masechta) if r.get("s3Url")
                     and (mode == "Both" or is_yerushalmi(r) == (mode == "Yerushalmi"))]
@@ -242,17 +331,19 @@ class App:
             recs.sort(key=lambda r: (is_yerushalmi(r), r.get("sortDaf") or 0, r["id"]))
             used, jobs = set(), []
             for r in recs:
-                base = re.sub(r'[\\/:*?"<>|]', "_", r["title"]).strip() + (" (Yerushalmi)" if is_yerushalmi(r) else "")
+                base = safe_name(r["title"]) + (" (Yerushalmi)" if is_yerushalmi(r) else "")
                 name, n = base, 2
                 while name in used:
                     name, n = f"{base} ({n})", n + 1
                 used.add(name)
                 ext = os.path.splitext(urllib.parse.urlparse(r["s3Url"]).path)[1] or ".mp3"
-                jobs.append((r["s3Url"], folder / (name + ext)))
-            todo = [j for j in jobs if not j[1].exists()]
-            self.say(f"Found {len(jobs)} shiurim; {len(jobs) - len(todo)} already in the folder, {len(todo)} to download.")
+                # also count files saved directly in the base folder by older versions
+                jobs.append((r["s3Url"], folder / (name + ext), base_folder / (name + ext)))
+            todo = [j for j in jobs if not j[1].exists() and not j[2].exists()]
+            self.say(f"Found {len(jobs)} shiurim in {folder}; {len(jobs) - len(todo)} already there, "
+                     f"{len(todo)} to download.")
             t0, failed, finished = time.monotonic(), [], 0
-            for i, (url, path) in enumerate(todo):
+            for i, (url, path, _) in enumerate(todo):
                 if self.stop.is_set():
                     break
                 last = [0.0]
@@ -264,7 +355,7 @@ class App:
                     self.report(i + fr, len(todo), t0, path.name)
 
                 self.report(i, len(todo), t0, path.name)
-                ok = False
+                ok, err = False, None
                 for _ in range(3):
                     try:
                         ok = self.download(url, path, on_frac)
@@ -306,6 +397,23 @@ class App:
                 self.bar["value"] = a[0]
                 self.status.set(a[1])
                 self.current.set(a[2])
+            elif kind == "update":
+                tag, page, exe_url, skip = a
+                if getattr(sys, "frozen", False) and exe_url:
+                    if messagebox.askyesno("Update available",
+                                           f"Version {tag} is available (you have {VERSION}).\n\n"
+                                           "Download and install it now? The program will restart."):
+                        threading.Thread(target=self.apply_update, args=(tag, exe_url, skip), daemon=True).start()
+                elif messagebox.askyesno("Update available",
+                                         f"Version {tag} is available (you have {VERSION}).\n\n"
+                                         "Open the download page?"):
+                    webbrowser.open(page)
+            elif kind == "restart":
+                messagebox.showinfo("Update ready", f"Updated to {a[0]}. The program will now restart.")
+                subprocess.Popen([sys.executable])
+                self.close()
+            elif kind == "notice":
+                messagebox.showinfo("Updates", a[0])
             elif kind == "done":
                 self.status.set(a[0])
                 self.current.set("")
@@ -320,6 +428,7 @@ class App:
 
 
 if __name__ == "__main__":
+    cleanup_old_exe()
     root = tk.Tk()
     App(root)
     root.mainloop()
