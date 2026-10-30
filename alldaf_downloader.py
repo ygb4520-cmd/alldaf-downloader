@@ -10,7 +10,7 @@ from tkinter import ttk, filedialog, messagebox, simpledialog
 API = "https://alldaf.org/api/trpc/posts.fetchList"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 SSL_CTX = None  # set from the checkbox before each run
-VERSION = "1.5"  # bump this (and the release tag) when you publish a new .exe
+VERSION = "1.6"  # bump this (and the release tag) when you publish a new .exe
 REPO = "ygb4520-cmd/alldaf-downloader"
 CONFIG = Path.home() / ".alldaf_downloader.json"
 RETRIES = 5          # attempts for each network request
@@ -135,135 +135,255 @@ def set_window_icon(root):
 
 def apply_theme(root):
     style = ttk.Style(root)
-    style.theme_use("clam")  # clam is the only built-in theme that respects these colors
+    style.theme_use("clam")
     root.configure(bg=CREAM)
+
+    # Native ttk combobox popup colors.
     root.option_add("*TCombobox*Listbox.background", PANEL)
     root.option_add("*TCombobox*Listbox.foreground", INK)
     root.option_add("*TCombobox*Listbox.selectBackground", GOLD)
     root.option_add("*TCombobox*Listbox.selectForeground", BURGUNDY)
-    style.configure(".", background=CREAM, foreground=INK, font=("Segoe UI", 10))
+
+    style.configure(".", background=CREAM, foreground=INK,
+                    font=("Segoe UI", 10))
     style.configure("TFrame", background=CREAM)
+    style.configure("Panel.TFrame", background=PANEL)
     style.configure("TLabel", background=CREAM, foreground=INK)
-    style.configure("Field.TLabel", background=CREAM, foreground=BURGUNDY, font=("Georgia", 10, "bold"))
-    style.configure("Status.TLabel", background=CREAM, foreground=BURGUNDY, font=("Segoe UI", 10, "bold"))
-    style.configure("Muted.TLabel", background=CREAM, foreground=MUTED, font=("Segoe UI", 9))
+    style.configure("Field.TLabel", background=CREAM, foreground=BURGUNDY,
+                    font=("Segoe UI Semibold", 10))
+    style.configure("Section.TLabel", background=CREAM, foreground=BURGUNDY,
+                    font=("Segoe UI Semibold", 11))
+    style.configure("Muted.TLabel", background=CREAM, foreground=MUTED,
+                    font=("Segoe UI", 9))
+    style.configure("Status.TLabel", background=CREAM, foreground=BURGUNDY,
+                    font=("Segoe UI Semibold", 10))
     style.configure("Banner.TFrame", background=BURGUNDY)
-    style.configure("Banner.TLabel", background=BURGUNDY, foreground=GOLD, font=("Georgia", 16, "bold"))
-    style.configure("BannerSub.TLabel", background=BURGUNDY, foreground="#e8d9b0", font=("Segoe UI", 9))
-    style.configure("TButton", background=BURGUNDY, foreground="#f6e7b4", bordercolor=BURGUNDY,
-                    focuscolor=BURGUNDY, padding=(10, 4))
-    style.map("TButton", background=[("active", "#7a2a33"), ("disabled", "#cbbfa8")],
-              foreground=[("disabled", "#f3ecd8")])
-    style.configure("Gold.TButton", background=GOLD, foreground=BURGUNDY, bordercolor=GOLD,
-                    focuscolor=GOLD, font=("Segoe UI", 10, "bold"), padding=(12, 4))
-    style.map("Gold.TButton", background=[("active", "#dbb94a"), ("disabled", "#e6dcbc")],
-              foreground=[("disabled", "#8a7d6a")])
-    style.configure("TCheckbutton", background=CREAM, foreground=INK)
+    style.configure("Banner.TLabel", background=BURGUNDY, foreground="#f1d77c",
+                    font=("Georgia", 19, "bold"))
+    style.configure("BannerSub.TLabel", background=BURGUNDY,
+                    foreground="#f3e8d0", font=("Segoe UI", 9))
+    style.configure("TButton", background="#eee5d3", foreground=BURGUNDY,
+                    bordercolor="#d8c9a8", focuscolor=GOLD,
+                    padding=(11, 6), font=("Segoe UI", 9))
+    style.map("TButton",
+              background=[("active", "#e4d7bd"), ("disabled", "#e8e0d2")],
+              foreground=[("disabled", "#a99d8c")])
+    style.configure("Gold.TButton", background=GOLD, foreground=BURGUNDY,
+                    bordercolor=GOLD, focuscolor=GOLD,
+                    font=("Segoe UI Semibold", 10), padding=(18, 8))
+    style.map("Gold.TButton",
+              background=[("active", "#d8b33c"), ("disabled", "#e7dcb9")],
+              foreground=[("disabled", "#9a8c70")])
+    style.configure("TCheckbutton", background=CREAM, foreground=INK,
+                    font=("Segoe UI", 9))
     style.map("TCheckbutton", background=[("active", CREAM)])
-    style.configure("TRadiobutton", background=CREAM, foreground=INK)
+    style.configure("TRadiobutton", background=CREAM, foreground=INK,
+                    padding=(3, 3))
     style.map("TRadiobutton", background=[("active", CREAM)])
-    style.configure("TEntry", fieldbackground=PANEL, foreground=INK, bordercolor=GOLD,
-                    lightcolor=GOLD, darkcolor=GOLD, insertcolor=INK)
-    style.configure("TCombobox", fieldbackground=PANEL, foreground=INK, background=PANEL,
-                    bordercolor=GOLD, arrowcolor=BURGUNDY, lightcolor=GOLD, darkcolor=GOLD)
-    style.map("TCombobox", fieldbackground=[("readonly", PANEL)], foreground=[("readonly", INK)],
-              selectbackground=[("readonly", PANEL)], selectforeground=[("readonly", INK)])
-    style.configure("Gold.Horizontal.TProgressbar", troughcolor="#e9dfc7", background=GOLD,
-                    bordercolor=GOLD, lightcolor=GOLD, darkcolor=GOLD)
-    style.configure("Vertical.TScrollbar", background=GOLD, troughcolor=CREAM, bordercolor=CREAM,
-                    arrowcolor=BURGUNDY, lightcolor=GOLD, darkcolor=GOLD)
-    style.map("Vertical.TScrollbar", background=[("active", "#dbb94a")])
+    style.configure("TEntry", fieldbackground=PANEL, foreground=INK,
+                    insertcolor=INK, bordercolor="#d8c9a8",
+                    lightcolor=GOLD, darkcolor="#d8c9a8", padding=6)
+    style.map("TEntry", bordercolor=[("focus", GOLD)])
+    style.configure("TCombobox", fieldbackground=PANEL, foreground=INK,
+                    background=PANEL, bordercolor="#d8c9a8",
+                    arrowcolor=BURGUNDY, lightcolor=GOLD,
+                    darkcolor="#d8c9a8", padding=5)
+    style.map("TCombobox",
+              fieldbackground=[("readonly", PANEL)],
+              foreground=[("readonly", INK)],
+              selectbackground=[("readonly", PANEL)],
+              selectforeground=[("readonly", INK)],
+              bordercolor=[("focus", GOLD)])
+    style.configure("Gold.Horizontal.TProgressbar",
+                    troughcolor="#e9dfc7", background=GOLD,
+                    bordercolor="#e9dfc7", lightcolor=GOLD, darkcolor=GOLD,
+                    thickness=10)
+    style.configure("Vertical.TScrollbar", background="#e4d5b4",
+                    troughcolor=CREAM, bordercolor=CREAM,
+                    arrowcolor=BURGUNDY, lightcolor="#e4d5b4",
+                    darkcolor="#e4d5b4", arrowsize=12)
+    style.map("Vertical.TScrollbar",
+              background=[("active", GOLD), ("pressed", GOLD)])
 
 
 class App:
     def __init__(self, root):
         self.root, self.q, self.stop = root, queue.Queue(), threading.Event()
-        self.cfg = {"speakers": DEFAULT_SPEAKERS, "folder": str(Path.home() / "Downloads" / "Shiurim"),
+        self.cfg = {"speakers": DEFAULT_SPEAKERS,
+                    "folder": str(Path.home() / "Downloads" / "Shiurim"),
                     "recent": []}
         try:
             self.cfg.update(json.loads(CONFIG.read_text(encoding="utf-8")))
         except Exception:
             pass
+
         set_window_icon(root)
         apply_theme(root)
         root.title("AllDaf Shiur Downloader")
         root.geometry("640x740")
         root.minsize(600, 680)
-        f = ttk.Frame(root, padding=12)
+
+        # Main window grid: the log takes any extra vertical space.
+        f = ttk.Frame(root, padding=(16, 14, 16, 14))
         f.pack(fill="both", expand=True)
-        f.columnconfigure(1, weight=1)
+        f.columnconfigure(0, weight=1)
+        f.rowconfigure(8, weight=1)
 
-        banner = ttk.Frame(f, style="Banner.TFrame", padding=(14, 10))
-        banner.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 12))
-        ttk.Label(banner, text="AllDaf Shiur Downloader", style="Banner.TLabel").pack(anchor="w")
-        ttk.Label(banner, text="Download every shiur by a speaker on a mesechta",
-                  style="BannerSub.TLabel").pack(anchor="w")
+        # Header
+        banner = ttk.Frame(f, style="Banner.TFrame", padding=(18, 13))
+        banner.grid(row=0, column=0, sticky="ew", pady=(0, 13))
+        ttk.Label(banner, text="AllDaf Shiur Downloader",
+                  style="Banner.TLabel").pack(anchor="w")
+        ttk.Label(banner,
+                  text="Download every shiur by a speaker on a mesechta",
+                  style="BannerSub.TLabel").pack(anchor="w", pady=(3, 0))
 
-        ttk.Label(f, text="Speaker", style="Field.TLabel").grid(row=1, column=0, sticky="w")
-        self.speaker = ttk.Combobox(f, state="readonly")
-        self.speaker.grid(row=1, column=1, sticky="ew", padx=6, pady=3)
-        b = ttk.Frame(f)
-        b.grid(row=1, column=2)
-        ttk.Button(b, text="Add", width=7, command=self.add_speaker).pack(side="left")
-        ttk.Button(b, text="Remove", width=8, command=self.remove_speaker).pack(side="left", padx=3)
+        # Speaker selection
+        speaker_section = ttk.Frame(f, padding=(2, 2, 2, 7))
+        speaker_section.grid(row=1, column=0, sticky="ew")
+        speaker_section.columnconfigure(1, weight=1)
+        ttk.Label(speaker_section, text="Speaker",
+                  style="Field.TLabel").grid(row=0, column=0,
+                                             sticky="w", padx=(0, 12))
+        self.speaker = ttk.Combobox(speaker_section, state="readonly")
+        self.speaker.grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        speaker_buttons = ttk.Frame(speaker_section)
+        speaker_buttons.grid(row=0, column=2, sticky="e")
+        ttk.Button(speaker_buttons, text="Add", width=7,
+                   command=self.add_speaker).pack(side="left")
+        ttk.Button(speaker_buttons, text="Remove", width=8,
+                   command=self.remove_speaker).pack(side="left", padx=(6, 0))
         self.refresh_speakers()
 
-        ttk.Label(f, text="Mesechta", style="Field.TLabel").grid(row=2, column=0, sticky="nw", pady=8)
-        mf = ttk.Frame(f)
-        mf.grid(row=2, column=1, columnspan=2, sticky="ew", pady=8, padx=6)
-        mf.columnconfigure(0, weight=1)
+        # Mesechta search and grouped list
+        mesechta_section = ttk.Frame(f, padding=(0, 4, 0, 7))
+        mesechta_section.grid(row=2, column=0, sticky="nsew")
+        mesechta_section.columnconfigure(0, weight=1)
+        mesechta_section.rowconfigure(1, weight=1)
+        ttk.Label(mesechta_section, text="Mesechta",
+                  style="Field.TLabel").grid(row=0, column=0,
+                                             sticky="w", pady=(0, 5))
+        list_panel = ttk.Frame(mesechta_section, style="Panel.TFrame",
+                               padding=7)
+        list_panel.grid(row=1, column=0, sticky="nsew")
+        list_panel.columnconfigure(0, weight=1)
+        list_panel.rowconfigure(1, weight=1)
+
+        search_row = ttk.Frame(list_panel, style="Panel.TFrame")
+        search_row.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        search_row.columnconfigure(0, weight=1)
         self.search = tk.StringVar()
         self.search.trace_add("write", lambda *_: self.filter_list())
-        ttk.Entry(mf, textvariable=self.search).grid(row=0, column=0, sticky="ew")
-        ttk.Label(mf, text="type to search", style="Muted.TLabel").grid(row=0, column=1, padx=6)
-        self.lb = tk.Listbox(mf, height=9, exportselection=False, activestyle="none", relief="flat",
-                             bg=PANEL, fg=INK, selectbackground=GOLD, selectforeground=BURGUNDY,
-                             highlightthickness=1, highlightbackground=GOLD, highlightcolor=GOLD,
-                             font=("Segoe UI", 10))
-        self.lb.grid(row=1, column=0, sticky="ew", pady=3)
-        sb = ttk.Scrollbar(mf, command=self.lb.yview)
-        sb.grid(row=1, column=1, sticky="ns")
+        ttk.Entry(search_row, textvariable=self.search).grid(
+            row=0, column=0, sticky="ew")
+        ttk.Label(search_row, text="type to search",
+                  style="Muted.TLabel").grid(row=0, column=1,
+                                             padx=(9, 3))
+
+        list_frame = ttk.Frame(list_panel, style="Panel.TFrame")
+        list_frame.grid(row=1, column=0, sticky="nsew")
+        list_frame.columnconfigure(0, weight=1)
+        list_frame.rowconfigure(0, weight=1)
+        self.lb = tk.Listbox(
+            list_frame, height=8, exportselection=False,
+            activestyle="none", relief="flat", borderwidth=0,
+            bg=PANEL, fg=INK, selectbackground=GOLD,
+            selectforeground=BURGUNDY, highlightthickness=1,
+            highlightbackground="#e2d5bd", highlightcolor=GOLD,
+            font=("Segoe UI", 10), selectborderwidth=0)
+        self.lb.grid(row=0, column=0, sticky="nsew")
+        sb = ttk.Scrollbar(list_frame, command=self.lb.yview)
+        sb.grid(row=0, column=1, sticky="ns")
         self.lb.config(yscrollcommand=sb.set)
         self.lb.bind("<<ListboxSelect>>", self.on_select)
         self.filter_list()
 
-        ttk.Label(f, text="Type", style="Field.TLabel").grid(row=3, column=0, sticky="w")
+        # Talmud type
+        type_row = ttk.Frame(f, padding=(2, 7, 2, 7))
+        type_row.grid(row=3, column=0, sticky="ew")
+        ttk.Label(type_row, text="Type",
+                  style="Field.TLabel").pack(side="left", padx=(0, 23))
         self.mode = tk.StringVar(value="Bavli")
-        rf = ttk.Frame(f)
-        rf.grid(row=3, column=1, sticky="w", padx=6)
         for m in ("Bavli", "Yerushalmi", "Both"):
-            ttk.Radiobutton(rf, text=m, value=m, variable=self.mode).pack(side="left", padx=4)
+            ttk.Radiobutton(type_row, text=m, value=m,
+                            variable=self.mode).pack(side="left", padx=(0, 17))
 
-        ttk.Label(f, text="Save to", style="Field.TLabel").grid(row=4, column=0, sticky="w", pady=8)
+        # Destination folder
+        folder_row = ttk.Frame(f, padding=(2, 4, 2, 9))
+        folder_row.grid(row=4, column=0, sticky="ew")
+        folder_row.columnconfigure(1, weight=1)
+        ttk.Label(folder_row, text="Save to",
+                  style="Field.TLabel").grid(row=0, column=0,
+                                             sticky="w", padx=(0, 12))
         self.folder = tk.StringVar(value=self.cfg["folder"])
-        ttk.Entry(f, textvariable=self.folder).grid(row=4, column=1, sticky="ew", padx=6)
-        ttk.Button(f, text="Browse", command=self.browse).grid(row=4, column=2)
+        ttk.Entry(folder_row, textvariable=self.folder).grid(
+            row=0, column=1, sticky="ew", padx=(0, 8))
+        ttk.Button(folder_row, text="Browse",
+                   command=self.browse).grid(row=0, column=2)
 
+        # Primary and secondary actions
         self.skip_ssl = tk.BooleanVar(value=self.cfg.get("skip_ssl", True))
-        bf = ttk.Frame(f)
-        bf.grid(row=5, column=0, columnspan=3, pady=8)
-        self.start_btn = ttk.Button(bf, text="Start download", style="Gold.TButton", command=self.start)
-        self.start_btn.pack(side="left", padx=5)
-        self.stop_btn = ttk.Button(bf, text="Stop", command=self.stop.set, state="disabled")
-        self.stop_btn.pack(side="left", padx=5)
-        ttk.Checkbutton(bf, text="Skip SSL check (proxy)", variable=self.skip_ssl).pack(side="left", padx=5)
-        ttk.Button(bf, text="Check for updates", command=lambda: threading.Thread(
-            target=self.update_check, kwargs={"manual": True, "skip_ssl": self.skip_ssl.get()}, daemon=True).start()
-        ).pack(side="left", padx=5)
+        actions = ttk.Frame(f, padding=(0, 3, 0, 10))
+        actions.grid(row=5, column=0, sticky="ew")
+        self.start_btn = ttk.Button(
+            actions, text="Start download", style="Gold.TButton",
+            command=self.start)
+        self.start_btn.pack(side="left")
+        self.stop_btn = ttk.Button(
+            actions, text="Stop", command=self.stop.set, state="disabled")
+        self.stop_btn.pack(side="left", padx=(8, 13))
+        ttk.Checkbutton(actions, text="Skip SSL check (proxy)",
+                        variable=self.skip_ssl).pack(side="left")
+        ttk.Button(
+            actions, text="Check for updates",
+            command=lambda: threading.Thread(
+                target=self.update_check,
+                kwargs={"manual": True, "skip_ssl": self.skip_ssl.get()},
+                daemon=True).start()
+        ).pack(side="right")
 
-        self.bar = ttk.Progressbar(f, maximum=100, style="Gold.Horizontal.TProgressbar")
-        self.bar.grid(row=6, column=0, columnspan=3, sticky="ew", pady=3)
+        # Progress and status
+        progress_section = ttk.Frame(f, padding=(0, 3, 0, 8))
+        progress_section.grid(row=6, column=0, sticky="ew")
+        progress_section.columnconfigure(0, weight=1)
+        self.bar = ttk.Progressbar(
+            progress_section, maximum=100,
+            style="Gold.Horizontal.TProgressbar")
+        self.bar.grid(row=0, column=0, sticky="ew", pady=(0, 7))
         self.status, self.current = tk.StringVar(value="Ready"), tk.StringVar()
-        ttk.Label(f, textvariable=self.status, style="Status.TLabel").grid(row=7, column=0, columnspan=3, sticky="w")
-        ttk.Label(f, textvariable=self.current, style="Muted.TLabel").grid(row=8, column=0, columnspan=3, sticky="w")
-        self.log = tk.Text(f, height=10, state="disabled", wrap="word", relief="flat", bg=PANEL, fg=INK,
-                           highlightthickness=1, highlightbackground=GOLD, highlightcolor=GOLD,
-                           font=("Consolas", 9), padx=8, pady=6)
-        self.log.grid(row=9, column=0, columnspan=3, sticky="nsew", pady=6)
-        f.rowconfigure(9, weight=1)
+        ttk.Label(progress_section, textvariable=self.status,
+                  style="Status.TLabel").grid(row=1, column=0, sticky="w")
+        ttk.Label(progress_section, textvariable=self.current,
+                  style="Muted.TLabel").grid(row=2, column=0,
+                                             sticky="w", pady=(2, 0))
+
+        # Read-only activity log
+        log_header = ttk.Frame(f)
+        log_header.grid(row=7, column=0, sticky="ew", pady=(3, 5))
+        ttk.Label(log_header, text="Activity log",
+                  style="Section.TLabel").pack(side="left")
+        ttk.Label(log_header, text="Download messages and errors",
+                  style="Muted.TLabel").pack(side="right")
+        log_frame = ttk.Frame(f, style="Panel.TFrame", padding=5)
+        log_frame.grid(row=8, column=0, sticky="nsew")
+        log_frame.columnconfigure(0, weight=1)
+        log_frame.rowconfigure(0, weight=1)
+        self.log = tk.Text(
+            log_frame, height=8, state="disabled", wrap="word",
+            relief="flat", borderwidth=0, bg=PANEL, fg=INK,
+            insertbackground=INK, font=("Consolas", 9),
+            padx=8, pady=7, spacing1=2, spacing3=2)
+        self.log.grid(row=0, column=0, sticky="nsew")
+        log_scroll = ttk.Scrollbar(log_frame, command=self.log.yview)
+        log_scroll.grid(row=0, column=1, sticky="ns")
+        self.log.config(yscrollcommand=log_scroll.set)
+
         root.protocol("WM_DELETE_WINDOW", self.close)
         self.poll()
-        threading.Thread(target=self.update_check, kwargs={"skip_ssl": self.skip_ssl.get()}, daemon=True).start()
+        threading.Thread(
+            target=self.update_check,
+            kwargs={"skip_ssl": self.skip_ssl.get()},
+            daemon=True).start()
 
     # ---------- retries ----------
     def retry(self, action, label):
@@ -392,8 +512,15 @@ class App:
     def start(self):
         spk = next((s for s in self.cfg["speakers"] if s["name"] == self.speaker.get()), None)
         mas = self.masechta()
-        if not spk or not mas or not self.folder.get().strip():
-            messagebox.showwarning("Missing info", "Choose a speaker, a mesechta, and a folder.")
+        missing = []
+        if not spk:
+            missing.append("a speaker")
+        if not mas:
+            missing.append("a mesechta")
+        if not self.folder.get().strip():
+            missing.append("a save folder")
+        if missing:
+            messagebox.showwarning("Missing info", "Please choose " + " and ".join(missing) + ".")
             return
         self.remember_masechta(mas)
         self.save_cfg()
