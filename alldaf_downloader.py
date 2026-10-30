@@ -10,7 +10,7 @@ from tkinter import ttk, filedialog, messagebox, simpledialog
 API = "https://alldaf.org/api/trpc/posts.fetchList"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 SSL_CTX = None  # set from the checkbox before each run
-VERSION = "1.2"  # bump this (and the release tag) when you publish a new .exe
+VERSION = "1.3"  # bump this (and the release tag) when you publish a new .exe
 REPO = "ygb4520-cmd/alldaf-downloader"
 CONFIG = Path.home() / ".alldaf_downloader.json"
 RETRIES = 5          # attempts for each network request
@@ -448,7 +448,11 @@ class App:
                     webbrowser.open(page)
             elif kind == "restart":
                 messagebox.showinfo("Update ready", f"Updated to {a[0]}. The program will now restart.")
-                subprocess.Popen([sys.executable])
+                # The new copy must not inherit the old copy's temp-folder settings, or the old copy
+                # can't clean up its temp folder when it closes ("Failed to remove temporary directory").
+                env = {k: v for k, v in os.environ.items() if not k.startswith("_PYI") and k != "_MEIPASS2"}
+                env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+                subprocess.Popen([sys.executable], env=env)
                 self.close()
             elif kind == "notice":
                 messagebox.showinfo("Updates", a[0])
