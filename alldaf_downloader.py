@@ -10,7 +10,7 @@ from tkinter import ttk, filedialog, messagebox, simpledialog
 API = "https://alldaf.org/api/trpc/posts.fetchList"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 SSL_CTX = None  # set from the checkbox before each run
-VERSION = "1.3"  # bump this (and the release tag) when you publish a new .exe
+VERSION = "1.4"  # bump this (and the release tag) when you publish a new .exe
 REPO = "ygb4520-cmd/alldaf-downloader"
 CONFIG = Path.home() / ".alldaf_downloader.json"
 RETRIES = 5          # attempts for each network request
@@ -82,13 +82,23 @@ def download_update(exe_url, skip_ssl):
 
 
 def cleanup_old_exe():
-    """Remove the previous version left behind by an update (it isn't running now)."""
+    """Remove the previous version left behind by an update. The old copy stays locked until it finishes
+    closing, so keep retrying in the background for a minute."""
     if getattr(sys, "frozen", False):
         exe = Path(sys.executable)
-        try:
-            exe.with_name(exe.stem + ".old.exe").unlink()
-        except OSError:
-            pass
+        old = exe.with_name(exe.stem + ".old.exe")
+
+        def try_delete():
+            for _ in range(30):
+                try:
+                    old.unlink()
+                    return
+                except FileNotFoundError:
+                    return
+                except OSError:
+                    time.sleep(2)
+
+        threading.Thread(target=try_delete, daemon=True).start()
 
 
 def safe_name(s):
