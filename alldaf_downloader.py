@@ -274,11 +274,22 @@ class App:
         search_row.columnconfigure(0, weight=1)
         self.search = tk.StringVar()
         self.search.trace_add("write", lambda *_: self.filter_list())
-        ttk.Entry(search_row, textvariable=self.search).grid(
-            row=0, column=0, sticky="ew")
-        ttk.Label(search_row, text="type to search",
-                  style="Muted.TLabel").grid(row=0, column=1,
-                                             padx=(9, 3))
+        search_entry = ttk.Entry(search_row, textvariable=self.search)
+        search_entry.grid(row=0, column=0, sticky="ew")
+        # Hint text shown inside the search box while it's empty. It's a separate label placed over
+        # the entry, so the search text itself stays empty and the filter isn't affected.
+        hint = tk.Label(search_row, text="type to search", bg=PANEL, fg=MUTED, font=("Segoe UI", 9),
+                        bd=0, cursor="xterm")
+        hint.place(in_=search_entry, x=7, rely=0.5, anchor="w")
+        hint.bind("<Button-1>", lambda e: search_entry.focus_set())
+
+        def update_hint(*_):
+            if self.search.get():
+                hint.place_forget()
+            else:
+                hint.place(in_=search_entry, x=7, rely=0.5, anchor="w")
+
+        self.search.trace_add("write", update_hint)
 
         list_frame = ttk.Frame(list_panel, style="Panel.TFrame")
         list_frame.grid(row=1, column=0, sticky="nsew")
