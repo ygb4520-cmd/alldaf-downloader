@@ -10,7 +10,7 @@ from tkinter import ttk, filedialog, messagebox, simpledialog
 API = "https://alldaf.org/api/trpc/posts.fetchList"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 SSL_CTX = None  # set from the checkbox before each run
-VERSION = "1.6"  # bump this (and the release tag) when you publish a new .exe
+VERSION = "1.7"  # bump this (and the release tag) when you publish a new .exe
 REPO = "ygb4520-cmd/alldaf-downloader"
 CONFIG = Path.home() / ".alldaf_downloader.json"
 RETRIES = 5          # attempts for each network request
@@ -282,13 +282,25 @@ class App:
                         bd=0, cursor="xterm")
         hint.place(in_=search_entry, x=7, rely=0.5, anchor="w")
         hint.bind("<Button-1>", lambda e: search_entry.focus_set())
+        has_focus = {"on": False}
 
         def update_hint(*_):
-            if self.search.get():
+            # hide the hint while the box is focused or has text; show it otherwise
+            if self.search.get() or has_focus["on"]:
                 hint.place_forget()
             else:
                 hint.place(in_=search_entry, x=7, rely=0.5, anchor="w")
 
+        def on_focus_in(_e):
+            has_focus["on"] = True
+            update_hint()
+
+        def on_focus_out(_e):
+            has_focus["on"] = False
+            update_hint()
+
+        search_entry.bind("<FocusIn>", on_focus_in)
+        search_entry.bind("<FocusOut>", on_focus_out)
         self.search.trace_add("write", update_hint)
 
         list_frame = ttk.Frame(list_panel, style="Panel.TFrame")
