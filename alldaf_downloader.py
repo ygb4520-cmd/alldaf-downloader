@@ -10,7 +10,7 @@ from tkinter import ttk, filedialog, messagebox, simpledialog
 API = "https://alldaf.org/api/trpc/posts.fetchList"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 SSL_CTX = None  # set from the checkbox before each run
-VERSION = "1.7"  # bump this (and the release tag) when you publish a new .exe
+VERSION = "1.9"  # bump this (and the release tag) when you publish a new .exe
 REPO = "ygb4520-cmd/alldaf-downloader"
 CONFIG = Path.home() / ".alldaf_downloader.json"
 RETRIES = 5          # attempts for each network request
@@ -65,17 +65,23 @@ def check_for_update(skip_ssl):
 
 
 def download_update(exe_url, skip_ssl):
-    """Download the new .exe next to the running one, then swap the files."""
+    """Download the new .exe next to the running one, then swap the files.
+    Certificates are ALWAYS checked here (skip_ssl is ignored): this file gets run, so it must be authentic."""
     current = Path(sys.executable)
     new = current.with_name(current.stem + ".new.exe")
     old = current.with_name(current.stem + ".old.exe")
     req = urllib.request.Request(exe_url, headers=HEADERS)
-    with urllib.request.urlopen(req, timeout=60, context=make_ctx(skip_ssl)) as r, open(new, "wb") as out:
+    with urllib.request.urlopen(req, timeout=60) as r, open(new, "wb") as out:
+        size, got = int(r.headers.get("Content-Length") or 0), 0
         while True:
             chunk = r.read(65536)
             if not chunk:
                 break
             out.write(chunk)
+            got += len(chunk)
+    if size and got != size:
+        new.unlink()
+        raise IOError(f"update download was cut short ({got} of {size} bytes)")
     # Windows lets a running .exe be renamed but not overwritten, so move the old one aside first
     try:
         old.unlink()
@@ -110,8 +116,14 @@ def cleanup_old_exe():
         threading.Thread(target=try_delete, daemon=True).start()
 
 
+WIN_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+
+
 def safe_name(s):
-    return re.sub(r'[\\/:*?"<>|]', "_", s).strip()
+    s = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", s).strip().rstrip(". ")
+    if s.split(".")[0].upper() in WIN_RESERVED:
+        s = "_" + s
+    return s or "_"
 
 
 def fmt_eta(s):
@@ -345,7 +357,7 @@ class App:
                    command=self.browse).grid(row=0, column=2)
 
         # Primary and secondary actions
-        self.skip_ssl = tk.BooleanVar(value=self.cfg.get("skip_ssl", True))
+        self.skip_ssl = tk.BooleanVar(value=self.cfg.get("skip_ssl", False))
         actions = ttk.Frame(f, padding=(0, 3, 0, 10))
         actions.grid(row=5, column=0, sticky="ew")
         self.start_btn = ttk.Button(
@@ -470,7 +482,7 @@ class App:
             return
         raw = simpledialog.askstring("Add speaker", "Author ID, or paste the author page link\n"
                                      "(the number at the end of alldaf.org/authors/...):", parent=self.root)
-        m = re.search(r"(\d+)\s*$", (raw or "").strip())
+        m = re.search(r"(\d+)/?$", re.split(r"[?#]", (raw or "").strip())[0].rstrip())
         if not m:
             messagebox.showerror("Add speaker", "Couldn't find an ID number.")
             return
@@ -589,6 +601,8 @@ class App:
                 while not self.stop.is_set():
                     chunk = r.read(65536)
                     if not chunk:
+                        if size and got != size:
+                            raise IOError(f"connection dropped ({got} of {size} bytes)")
                         out.close()
                         os.replace(part, path)
                         return True
@@ -609,7 +623,11 @@ class App:
         try:
             folder = base_folder / safe_name(speaker_name) / safe_name(masechta)
             folder.mkdir(parents=True, exist_ok=True)
-            recs = [r for r in self.fetch(author_id, masechta) if r.get("s3Url")
+            fetched = self.fetch(author_id, masechta)
+            if self.stop.is_set():
+                summary = "Stopped."
+                return
+            recs = [r for r in fetched if r.get("s3Url")
                     and (mode == "Both" or is_yerushalmi(r) == (mode == "Yerushalmi"))]
             if not recs:
                 self.say(f"No shiurim found for '{masechta}'. If the speaker has shiurim on it, the site may spell "
