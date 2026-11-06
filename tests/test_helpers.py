@@ -29,6 +29,28 @@ class Helpers(unittest.TestCase):
         self.assertTrue(ad.is_yerushalmi({"title": "Yerushalmi Berachos 1"}))
         self.assertFalse(ad.is_yerushalmi({"title": "Berachos 1", "series": None}))
 
+    def test_record_daf(self):
+        meta = {"metadata": [{"name": "dafMasechta", "value": "Bava Kama 2"}], "title": "x", "sortDaf": 1400}
+        self.assertEqual(ad.record_daf(meta), 2)  # not the Shas-wide sortDaf
+        self.assertEqual(ad.record_daf({"title": "Shabbos 155 - Discontent"}), 155)
+        self.assertEqual(ad.record_daf({"title": "Succah 11a"}), 11)
+        self.assertIsNone(ad.record_daf({"title": "Intro"}))
+
+    def test_daf_range(self):
+        self.assertEqual(ad.parse_daf_range("", " "), (None, None))
+        self.assertEqual(ad.parse_daf_range("20", "40"), (20, 40))
+        self.assertEqual(ad.parse_daf_range("", "9"), (None, 9))
+        for bad in (("a", ""), ("0", ""), ("5", "3"), ("-2", "")):
+            with self.assertRaises(ValueError):
+                ad.parse_daf_range(*bad)
+
+    def test_parse_authors(self):
+        self.assertEqual(ad.parse_authors({"authors": [{"id": 5, "name": " Rabbi A "}]}), [{"id": 5, "name": "Rabbi A"}])
+        self.assertEqual(ad.parse_authors({"posts": []}), [])
+        for bad in ([], {"authors": [{"id": "x", "name": "n"}]}, {"authors": "no"}):
+            with self.assertRaises(ad.ApiChanged):
+                ad.parse_authors(bad)
+
 
 if __name__ == "__main__":
     unittest.main()

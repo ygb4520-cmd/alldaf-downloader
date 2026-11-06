@@ -13,9 +13,10 @@ Or run from source (Python 3.8+, nothing to install): `python alldaf_downloader.
 
 ## Using it
 
-1. Pick a **speaker** (use **Add** for others: paste the number or the link from their alldaf.org author page).
+1. Pick a **speaker**. Use **Add** for others: type their name and choose from the matches (or paste the link/ID from their alldaf.org author page).
 2. Pick a **mesechta** (type to search; recently used ones are on top) and **Bavli / Yerushalmi / Both**.
-3. Choose a **Save to** folder and press **Start download**.
+3. Optionally set a **Dapim** range (e.g. 20 to 40; blank = all).
+4. Choose a **Save to** folder and press **Start download**.
 
 Shiurim already in the folder are skipped, so you can run it again later to pick up new ones.
 Downloads run 3 at a time, and a dropped connection or **Stop** is continued from where it left off next time.

@@ -84,6 +84,15 @@ class Download(unittest.TestCase):
             last = app.q.get()
         self.assertIn("0 downloaded", last[1])
 
+    def test_worker_daf_range(self):
+        app, d = make_app(), pathlib.Path(tempfile.mkdtemp())
+        recs = [{"id": i, "title": f"T {i}", "s3Url": f"{self.base}/{i}.mp3", "sortDaf": 1400 + i,
+                 "metadata": [{"name": "dafMasechta", "value": f"Bava Kama {i}"}]} for i in range(6)]
+        app.fetch = lambda a, m: recs
+        app.worker(1, "Spk", "Bava Kama", "Bavli", d, (2, 4))
+        got = sorted(f.name for f in (d / "Spk" / "Bava Kama").iterdir())
+        self.assertEqual(got, ["T 2.mp3", "T 3.mp3", "T 4.mp3"])
+
     def test_api_shape_check(self):
         app = make_app()
         app.get_page = lambda inp: {"records": [{"nope": 1}], "total": 1}

@@ -9,9 +9,10 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 
 API = "https://alldaf.org/api/trpc/posts.fetchList"
+SEARCH_API = "https://alldaf.org/api/trpc/opensearch.all"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 SSL_CTX = None  # set from the checkbox before each run
-VERSION = "1.10"  # bump this (and the release tag) when you publish a new .exe
+VERSION = "1.11"  # bump this (and the release tag) when you publish a new .exe
 REPO = "ygb4520-cmd/alldaf-downloader"
 CONFIG = Path.home() / ".alldaf_downloader.json"
 RETRIES = 5          # attempts for each network request
@@ -59,6 +60,58 @@ def parse_author_id(raw):
     """Author ID from a bare number or an alldaf.org author link (trailing / or ?query are fine)."""
     m = re.search(r"(\d+)/?$", re.split(r"[?#]", (raw or "").strip())[0].rstrip())
     return int(m.group(1)) if m else None
+
+
+def parse_authors(data):
+    """Validate the site's search reply and return [{"id", "name"}, ...] (empty list = no match)."""
+    if not isinstance(data, dict):
+        raise ApiChanged(API_MSG)
+    authors = data.get("authors") or []
+    if not isinstance(authors, list) or any(
+            not isinstance(a, dict) or not isinstance(a.get("id"), int) or not isinstance(a.get("name"), str)
+            for a in authors):
+        raise ApiChanged(API_MSG)
+    return [{"id": a["id"], "name": a["name"].strip()} for a in authors]
+
+
+def search_authors(query, ctx):
+    """Look a speaker up by name on alldaf.org (the same search the site's search box uses)."""
+    inp = {"0": {"query": query, "size": 10, "platform": "AllDaf"}}
+    url = SEARCH_API + "?batch=1&input=" + urllib.parse.quote(json.dumps(inp, separators=(",", ":")), safe="")
+    with urllib.request.urlopen(urllib.request.Request(url, headers=HEADERS), timeout=20, context=ctx) as r:
+        body = r.read()
+    try:
+        data = json.loads(body)[0]["result"]["data"]
+    except (ValueError, KeyError, IndexError, TypeError):
+        raise ApiChanged(API_MSG)
+    return parse_authors(data)
+
+
+def record_daf(r):
+    """Daf number of a shiur (the 'sortDaf' field is a counter across all of Shas, not the daf).
+    Uses the site's own 'dafMasechta' label (e.g. 'Bava Kama 2'), else the first number in the title."""
+    for m in r.get("metadata") or []:
+        if isinstance(m, dict) and m.get("name") == "dafMasechta":
+            nums = re.findall(r"\d+", str(m.get("value", "")))
+            if nums:
+                return int(nums[-1])
+    nums = re.findall(r"\d+", r.get("title", ""))
+    return int(nums[0]) if nums else None
+
+
+def parse_daf_range(lo, hi):
+    """('', '') -> (None, None). Raises ValueError with a friendly message for bad input."""
+    def one(t):
+        t = t.strip()
+        if not t:
+            return None
+        if not t.isdigit() or int(t) < 1:
+            raise ValueError("Dapim must be whole numbers, like 20 to 40 (or leave them blank for all).")
+        return int(t)
+    a, b = one(lo), one(hi)
+    if a is not None and b is not None and a > b:
+        raise ValueError("The first daf is after the last one.")
+    return a, b
 
 
 def check_for_update(skip_ssl):
@@ -373,6 +426,12 @@ class App:
         for m in ("Bavli", "Yerushalmi", "Both"):
             ttk.Radiobutton(type_row, text=m, value=m,
                             variable=self.mode).pack(side="left", padx=(0, 17))
+        ttk.Label(type_row, text="Dapim", style="Field.TLabel").pack(side="left", padx=(14, 6))
+        self.daf_from, self.daf_to = tk.StringVar(), tk.StringVar()
+        ttk.Entry(type_row, textvariable=self.daf_from, width=5, justify="center").pack(side="left")
+        ttk.Label(type_row, text=" to ").pack(side="left")
+        ttk.Entry(type_row, textvariable=self.daf_to, width=5, justify="center").pack(side="left")
+        ttk.Label(type_row, text="blank = all", style="Muted.TLabel").pack(side="left", padx=(8, 0))
 
         # Destination folder
         folder_row = ttk.Frame(f, padding=(2, 4, 2, 9))
@@ -512,20 +571,77 @@ class App:
         else:
             self.speaker.set("")
 
-    def add_speaker(self):
-        name = simpledialog.askstring("Add speaker", "Speaker name:", parent=self.root)
-        if not name:
-            return
-        raw = simpledialog.askstring("Add speaker", "Author ID, or paste the author page link\n"
-                                     "(the number at the end of alldaf.org/authors/...):", parent=self.root)
-        author_id = parse_author_id(raw)
-        if author_id is None:
-            messagebox.showerror("Add speaker", "Couldn't find an ID number.")
-            return
-        self.cfg["speakers"] = [s for s in self.cfg["speakers"] if s["name"] != name.strip()]
-        self.cfg["speakers"].append({"name": name.strip(), "id": author_id})
+    def pick_author(self, authors):
+        """Small dialog: choose one of several matching speakers. Returns the chosen dict or None."""
+        win = tk.Toplevel(self.root)
+        win.title("Choose speaker")
+        win.configure(bg=CREAM)
+        win.transient(self.root)
+        win.resizable(False, False)
+        ttk.Label(win, text="Which speaker?", style="Field.TLabel").pack(anchor="w", padx=14, pady=(12, 6))
+        lb = tk.Listbox(win, height=min(10, len(authors)), width=46, exportselection=False, activestyle="none",
+                        relief="flat", bg=PANEL, fg=INK, selectbackground=GOLD, selectforeground=BURGUNDY,
+                        highlightthickness=1, highlightbackground="#e2d5bd", font=("Segoe UI", 10))
+        for a in authors:
+            lb.insert("end", f"{a['name']}   (ID {a['id']})")
+        lb.selection_set(0)
+        lb.pack(padx=14)
+        result = [None]
+
+        def ok(_e=None):
+            sel = lb.curselection()
+            result[0] = authors[sel[0]] if sel else None
+            win.destroy()
+
+        row = ttk.Frame(win)
+        row.pack(fill="x", padx=14, pady=12)
+        ttk.Button(row, text="Add", style="Gold.TButton", command=ok).pack(side="right")
+        ttk.Button(row, text="Cancel", command=win.destroy).pack(side="right", padx=(0, 8))
+        lb.bind("<Double-Button-1>", ok)
+        win.bind("<Return>", ok)
+        win.bind("<Escape>", lambda e: win.destroy())
+        win.grab_set()
+        lb.focus_set()
+        self.root.wait_window(win)
+        return result[0]
+
+    def store_speaker(self, name, author_id):
+        self.cfg["speakers"] = [s for s in self.cfg["speakers"] if s["name"] != name]
+        self.cfg["speakers"].append({"name": name, "id": author_id})
         self.save_cfg()
-        self.refresh_speakers(name.strip())
+        self.refresh_speakers(name)
+
+    def add_speaker(self):
+        q = simpledialog.askstring("Add speaker", "Type the speaker's name to look them up on alldaf.org,\n"
+                                   "or paste their author page link / ID number:", parent=self.root)
+        if not q or not q.strip():
+            return
+        q = q.strip()
+        author_id = parse_author_id(q)
+        if author_id is not None and (q.isdigit() or "/" in q):  # a link or bare ID: no search needed
+            name = simpledialog.askstring("Add speaker", "Speaker name (as you want it shown):", parent=self.root)
+            if name and name.strip():
+                self.store_speaker(name.strip(), author_id)
+            return
+        self.root.config(cursor="watch")
+        self.root.update_idletasks()
+        try:
+            authors = search_authors(q, make_ctx(self.skip_ssl.get()))
+        except ApiChanged as e:
+            messagebox.showerror("Add speaker", str(e))
+            return
+        except Exception as e:
+            messagebox.showerror("Add speaker", f"Couldn't search alldaf.org: {e}")
+            return
+        finally:
+            self.root.config(cursor="")
+        if not authors:
+            messagebox.showinfo("Add speaker", f"No speaker found for '{q}'.\nTry a shorter name, or paste "
+                                "the link to their author page on alldaf.org.")
+            return
+        chosen = self.pick_author(authors)
+        if chosen:
+            self.store_speaker(chosen["name"], chosen["id"])
 
     def remove_speaker(self):
         n = self.speaker.get()
@@ -593,6 +709,11 @@ class App:
         if missing:
             messagebox.showwarning("Missing info", "Please choose " + " and ".join(missing) + ".")
             return
+        try:
+            dafs = parse_daf_range(self.daf_from.get(), self.daf_to.get())
+        except ValueError as e:
+            messagebox.showwarning("Dapim", str(e))
+            return
         self.remember_masechta(mas)
         self.save_cfg()
         self.busy = True
@@ -602,7 +723,7 @@ class App:
         self.start_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
         self.bar["value"] = 0
-        args = (spk["id"], spk["name"], mas, self.mode.get(), Path(self.folder.get()).expanduser())
+        args = (spk["id"], spk["name"], mas, self.mode.get(), Path(self.folder.get()).expanduser(), dafs)
         threading.Thread(target=self.worker, args=args, daemon=True).start()
 
     def say(self, text):
@@ -689,7 +810,7 @@ class App:
         os.replace(part, path)
         return True
 
-    def worker(self, author_id, speaker_name, masechta, mode, base_folder):
+    def worker(self, author_id, speaker_name, masechta, mode, base_folder, dafs=(None, None)):
         summary = "Finished."
         try:
             folder = base_folder / safe_name(speaker_name) / safe_name(masechta)
@@ -706,6 +827,24 @@ class App:
                          "the name differently; check the mesechta filter on their alldaf.org author page.")
                 summary = "Nothing found."
                 return
+            lo, hi = dafs
+            if lo is not None or hi is not None:
+                kept, unknown = [], 0
+                for r in recs:
+                    d = record_daf(r)
+                    if d is None:
+                        unknown += 1
+                        kept.append(r)  # can't tell which daf it is, so don't silently drop it
+                    elif (lo is None or d >= lo) and (hi is None or d <= hi):
+                        kept.append(r)
+                label = f"{lo or 'start'} to {hi or 'end'}"
+                if unknown:
+                    self.say(f"{unknown} shiur(im) have no daf number in their title, so they were kept anyway.")
+                recs = kept
+                if not recs:
+                    self.say(f"No shiurim found for dapim {label}.")
+                    summary = "Nothing found."
+                    return
             recs.sort(key=lambda r: (is_yerushalmi(r), r.get("sortDaf") or 0, r["id"]))
             used, jobs = set(), []
             for r in recs:
