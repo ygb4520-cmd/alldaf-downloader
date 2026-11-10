@@ -1,7 +1,7 @@
 """AllDaf Shiur Downloader: download every shiur by one speaker on one mesechta.
 Files go to <folder>\\<speaker>\\<mesechta>\\. Needs only Python 3. Run:  python alldaf_downloader.py
 """
-import hashlib, json, os, queue, re, ssl, subprocess, sys, threading, time
+import difflib, hashlib, json, os, queue, re, shutil, ssl, subprocess, sys, threading, time
 import urllib.error, urllib.parse, urllib.request, webbrowser
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -12,11 +12,12 @@ API = "https://alldaf.org/api/trpc/posts.fetchList"
 SEARCH_API = "https://alldaf.org/api/trpc/opensearch.all"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 SSL_CTX = None  # set from the checkbox before each run
-VERSION = "1.11"  # bump this (and the release tag) when you publish a new .exe
+VERSION = "1.12"  # bump this (and the release tag) when you publish a new .exe
 REPO = "ygb4520-cmd/alldaf-downloader"
 CONFIG = Path.home() / ".alldaf_downloader.json"
 RETRIES = 5          # attempts for each network request
-WORKERS = 3          # shiurim downloaded at the same time
+WORKERS = 3          # shiurim downloaded at the same time (the default; changeable in the window)
+LOG_FILE = Path.home() / "alldaf_downloader.log"  # activity log, kept between runs
 API_MSG = ("alldaf.org sent back something unexpected, so the site may have changed. "
            "Try 'Check for updates'; if you are up to date, the downloader needs a fix.")
 
@@ -40,6 +41,38 @@ MASECHTOS = ["Berachos", "Shabbos", "Eruvin", "Pesachim", "Yoma", "Sukkah", "Bei
              "Shevuos", "Avodah Zarah", "Horayos", "Zevachim", "Menachos", "Chulin", "Bechoros", "Erchin",
              "Temurah", "Kerisos", "Meilah", "Tamid", "Nidah"]
 DEFAULT_SPEAKERS = [{"name": "Rabbi Zecharia Resnik", "id": 133821}]
+
+# Shown in the "What's new" window. Newest first. Add an entry for each release.
+CHANGELOG = [
+    ("1.12", [
+        "Test connection button: checks alldaf.org and GitHub and explains secure-connection problems.",
+        "'Did you mean?' suggestions when a mesechta name finds no shiurim.",
+        "Activity is saved to alldaf_downloader.log in your user folder.",
+        "A finished run flashes the taskbar and shows Done in the title.",
+        "Free-space check before downloading, so a run doesn't fail halfway.",
+        "Parallel downloads setting (1 to 5) next to the progress bar.",
+        "What's new window, which opens by itself after each update.",
+    ]),
+    ("1.9 to 1.11", [
+        "Dapim box: download only a range of pages, for example 2 to 10.",
+        "Speaker search by name when adding a speaker.",
+        "Open folder button.",
+        "Updates are checked against a SHA-256 checksum before they install.",
+        "Windows-reserved file names are made safe.",
+        "A clear message if the alldaf.org reply changes shape.",
+    ]),
+    ("1.6 to 1.8", [
+        "Redesigned window with a banner and styled buttons.",
+        "Missing-field warning names only what is missing.",
+        "The search hint sits inside the search box and hides when you click in.",
+    ]),
+    ("1.5", ["Colors from the Talmud cover; Recently used and All mesechtos labels."]),
+    ("1.4", ["The old copy is removed after an update."]),
+    ("1.3", ["Fixed the temporary-folder warning after an update restart."]),
+    ("1.2", ["Retries on connection errors; recently used mesechtos on top; cover icon."]),
+    ("1.1", ["Automatic updates; files saved in Shiurim\\<speaker>\\<mesechta>\\ folders."]),
+    ("1.0", ["First window version: pick a speaker, mesechta, and Bavli, Yerushalmi, or Both."]),
+]
 
 
 def make_ctx(skip_check):
@@ -217,6 +250,43 @@ def is_yerushalmi(r):
 def resource_path(name):
     """Bundled file: next to this script, or inside the PyInstaller bundle."""
     return Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / name
+
+
+def write_log(text):
+    """Append one line to the activity log. The log is trimmed so it doesn't grow forever."""
+    try:
+        if LOG_FILE.exists() and LOG_FILE.stat().st_size > 500_000:
+            LOG_FILE.write_text(LOG_FILE.read_text(encoding="utf-8", errors="replace")[-200_000:], encoding="utf-8")
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {text}\n")
+    except OSError:
+        pass
+
+
+def flash_window(root):
+    """Flash the taskbar button until the window is clicked. Windows only; does nothing elsewhere."""
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class FLASHWINFO(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.UINT), ("hwnd", wintypes.HWND), ("dwFlags", wintypes.DWORD),
+                        ("uCount", wintypes.UINT), ("dwTimeout", wintypes.DWORD)]
+
+        hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
+        info = FLASHWINFO(ctypes.sizeof(FLASHWINFO), hwnd, 0x0F, 5, 0)  # flash all, until the window is active
+        ctypes.windll.user32.FlashWindowEx(ctypes.byref(info))
+    except Exception:
+        pass
+
+
+def estimate_bytes(url):
+    """Size of one file, from a HEAD request (no download)."""
+    req = urllib.request.Request(url, method="HEAD", headers=HEADERS)
+    with urllib.request.urlopen(req, timeout=15, context=SSL_CTX) as r:
+        return int(r.headers.get("Content-Length") or 0)
 
 
 def set_window_icon(root):
@@ -448,6 +518,8 @@ class App:
 
         # Primary and secondary actions
         self.skip_ssl = tk.BooleanVar(value=self.cfg.get("skip_ssl", False))
+        self.workers = tk.IntVar(value=max(1, min(5, int(self.cfg.get("workers", WORKERS)))))
+        self.worker_count = WORKERS
         actions = ttk.Frame(f, padding=(0, 3, 0, 10))
         actions.grid(row=5, column=0, sticky="ew")
         self.start_btn = ttk.Button(
@@ -458,6 +530,11 @@ class App:
             actions, text="Stop", command=self.stop.set, state="disabled")
         self.stop_btn.pack(side="left", padx=(8, 8))
         ttk.Button(actions, text="Open folder", command=self.open_folder).pack(side="left", padx=(0, 13))
+        ttk.Button(actions, text="Test connection",
+                   command=lambda: threading.Thread(
+                       target=self.test_connection,
+                       kwargs={"skip_ssl": self.skip_ssl.get()}, daemon=True).start()
+                   ).pack(side="left", padx=(0, 13))
         ttk.Checkbutton(actions, text="Skip SSL check (proxy)",
                         variable=self.skip_ssl).pack(side="left")
         ttk.Button(
@@ -479,6 +556,10 @@ class App:
         self.status, self.current = tk.StringVar(value="Ready"), tk.StringVar()
         ttk.Label(progress_section, textvariable=self.status,
                   style="Status.TLabel").grid(row=1, column=0, sticky="w")
+        par = ttk.Frame(progress_section)
+        par.grid(row=1, column=1, sticky="e")
+        ttk.Label(par, text="Parallel downloads", style="Muted.TLabel").pack(side="left", padx=(0, 6))
+        ttk.Spinbox(par, from_=1, to=5, width=3, textvariable=self.workers, justify="center").pack(side="left")
         ttk.Label(progress_section, textvariable=self.current,
                   style="Muted.TLabel").grid(row=2, column=0,
                                              sticky="w", pady=(2, 0))
@@ -488,6 +569,7 @@ class App:
         log_header.grid(row=7, column=0, sticky="ew", pady=(3, 5))
         ttk.Label(log_header, text="Activity log",
                   style="Section.TLabel").pack(side="left")
+        ttk.Button(log_header, text="What's new", command=self.show_changelog).pack(side="right", padx=(8, 0))
         ttk.Label(log_header, text="Download messages and errors",
                   style="Muted.TLabel").pack(side="right")
         log_frame = ttk.Frame(f, style="Panel.TFrame", padding=5)
@@ -505,6 +587,10 @@ class App:
         self.log.config(yscrollcommand=log_scroll.set)
 
         root.protocol("WM_DELETE_WINDOW", self.close)
+        if self.cfg.get("seen_version") != VERSION:
+            self.cfg["seen_version"] = VERSION
+            self.save_cfg()
+            root.after(600, self.show_changelog)
         self.poll()
         threading.Thread(
             target=self.update_check,
@@ -531,6 +617,42 @@ class App:
                     time.sleep(0.1)
                 delay = min(delay * 2, 30)
 
+    # ---------- connection test and changelog ----------
+    def test_connection(self, skip_ssl):
+        lines = []
+        for label, url in (("alldaf.org", "https://alldaf.org/"),
+                           ("GitHub (for updates)", "https://api.github.com/")):
+            try:
+                with urllib.request.urlopen(urllib.request.Request(url, headers=HEADERS), timeout=10,
+                                            context=make_ctx(skip_ssl)) as r:
+                    lines.append(f"{label}: connected (HTTP {r.status})")
+            except Exception as e:
+                text = str(e)
+                lines.append(f"{label}: FAILED - {text}")
+                if any(word in text.upper() for word in ("CERTIFICATE", "SSL", "EOF")):
+                    lines.append("   This looks like a secure-connection problem. A proxy or security program "
+                                 "may be interfering. Try turning on 'Skip SSL check (proxy)'.")
+        lines.append(f"Activity log: {LOG_FILE}")
+        self.q.put(("info", "Connection test", "\n".join(lines)))
+
+    def show_changelog(self):
+        win = tk.Toplevel(self.root)
+        win.title("What's new")
+        win.configure(bg=CREAM)
+        win.geometry("480x520")
+        win.transient(self.root)
+        ttk.Button(win, text="Close", command=win.destroy).pack(side="bottom", pady=(0, 12))
+        txt = tk.Text(win, wrap="word", relief="flat", bg=PANEL, fg=INK, font=("Segoe UI", 10),
+                      padx=14, pady=12, highlightthickness=1, highlightbackground=GOLD)
+        txt.pack(fill="both", expand=True, padx=12, pady=(12, 8))
+        for ver, items in CHANGELOG:
+            here = "  (this version)" if ver == VERSION else ""
+            txt.insert("end", f"Version {ver}{here}\n")
+            for item in items:
+                txt.insert("end", f"  \u2022  {item}\n")
+            txt.insert("end", "\n")
+        txt.config(state="disabled")
+
     # ---------- updates ----------
     def update_check(self, manual=False, skip_ssl=True):
         try:
@@ -555,6 +677,10 @@ class App:
     # ---------- settings ----------
     def save_cfg(self):
         self.cfg["folder"] = self.folder.get()
+        try:
+            self.cfg["workers"] = max(1, min(5, int(self.workers.get())))
+        except (tk.TclError, ValueError):
+            pass
         self.cfg["skip_ssl"] = self.skip_ssl.get()
         try:
             tmp = CONFIG.with_name(CONFIG.name + ".tmp")
@@ -715,6 +841,11 @@ class App:
             messagebox.showwarning("Dapim", str(e))
             return
         self.remember_masechta(mas)
+        try:
+            self.worker_count = max(1, min(5, int(self.workers.get())))
+        except (tk.TclError, ValueError):
+            self.worker_count = WORKERS
+        self.root.title("AllDaf Shiur Downloader")
         self.save_cfg()
         self.busy = True
         global SSL_CTX
@@ -728,6 +859,7 @@ class App:
 
     def say(self, text):
         self.q.put(("log", text))
+        write_log(text)
 
     def open_folder(self):
         p = self.last_folder or Path(self.folder.get().strip() or ".").expanduser()
@@ -813,6 +945,7 @@ class App:
     def worker(self, author_id, speaker_name, masechta, mode, base_folder, dafs=(None, None)):
         summary = "Finished."
         try:
+            write_log(f"Run: {speaker_name} / {masechta} / {mode} / dapim {dafs}")
             folder = base_folder / safe_name(speaker_name) / safe_name(masechta)
             folder.mkdir(parents=True, exist_ok=True)
             self.last_folder = folder
@@ -823,8 +956,10 @@ class App:
             recs = [r for r in fetched if r.get("s3Url")
                     and (mode == "Both" or is_yerushalmi(r) == (mode == "Yerushalmi"))]
             if not recs:
-                self.say(f"No shiurim found for '{masechta}'. If the speaker has shiurim on it, the site may spell "
-                         "the name differently; check the mesechta filter on their alldaf.org author page.")
+                close = difflib.get_close_matches(masechta, MASECHTOS, n=1, cutoff=0.6)
+                hint = f" Did you mean '{close[0]}'?" if close and close[0] != masechta else ""
+                self.say(f"No shiurim found for '{masechta}'.{hint} If the speaker has shiurim on it, the site may "
+                         "spell the name differently; check the mesechta filter on their alldaf.org author page.")
                 summary = "Nothing found."
                 return
             lo, hi = dafs
@@ -860,6 +995,19 @@ class App:
             self.say(f"Found {len(jobs)} shiurim in {folder}; {len(jobs) - len(todo)} already there, "
                      f"{len(todo)} to download.")
 
+            if todo:
+                try:
+                    per_file = estimate_bytes(todo[0][0])
+                except Exception:
+                    per_file = 0
+                if per_file:
+                    need = per_file * len(todo) * 1.1
+                    free = shutil.disk_usage(base_folder).free
+                    if free < need:
+                        self.say(f"Not enough free space: about {need / 1e9:.1f} GB needed, {free / 1e9:.1f} GB free. "
+                                 "Free up space or choose another folder.")
+                        summary = "Not started: not enough free space."
+                        return
             t0, failed = time.monotonic(), []
             lock = threading.Lock()
             frac, active = {}, {}            # per-file progress and names of files in flight
@@ -907,7 +1055,7 @@ class App:
                 refresh()
 
             if todo:
-                with ThreadPoolExecutor(WORKERS) as ex:
+                with ThreadPoolExecutor(self.worker_count) as ex:
                     list(ex.map(lambda t: run_one(*t), [(i, u, p) for i, (u, p, _) in enumerate(todo)]))
             summary = ("Stopped. " if self.stop.is_set() else "Done. ") + f"{st['finished']} downloaded"
             summary += f", {len(failed)} failed." if failed else "."
@@ -917,6 +1065,7 @@ class App:
             summary = f"Error: {e}"
             self.say(summary)
         finally:
+            write_log(summary)
             self.q.put(("done", summary))
 
     def report(self, progress, total, t0, name):
@@ -961,10 +1110,16 @@ class App:
                 env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
                 subprocess.Popen([sys.executable], env=env)
                 self.close()
+            elif kind == "info":
+                messagebox.showinfo(a[0], a[1])
             elif kind == "notice":
                 messagebox.showinfo("Updates", a[0])
             elif kind == "done":
                 self.busy = False
+                if self.root.focus_get() is None:  # window isn't active: get the user's attention
+                    self.root.bell()
+                    flash_window(self.root)
+                self.root.title("Done - AllDaf Shiur Downloader")
                 self.status.set(a[0])
                 self.current.set("")
                 self.start_btn.config(state="normal")
