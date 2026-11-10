@@ -12,7 +12,7 @@ API = "https://alldaf.org/api/trpc/posts.fetchList"
 SEARCH_API = "https://alldaf.org/api/trpc/opensearch.all"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 SSL_CTX = None  # set from the checkbox before each run
-VERSION = "1.12"  # bump this (and the release tag) when you publish a new .exe
+VERSION = "1.13"  # bump this (and the release tag) when you publish a new .exe
 REPO = "ygb4520-cmd/alldaf-downloader"
 CONFIG = Path.home() / ".alldaf_downloader.json"
 RETRIES = 5          # attempts for each network request
@@ -44,6 +44,7 @@ DEFAULT_SPEAKERS = [{"name": "Rabbi Zecharia Resnik", "id": 133821}]
 
 # Shown in the "What's new" window. Newest first. Add an entry for each release.
 CHANGELOG = [
+    ("1.13", ["Buttons split into two rows, so Check for updates is no longer cut off."]),
     ("1.12", [
         "Test connection button: checks alldaf.org and GitHub and explains secure-connection problems.",
         "'Did you mean?' suggestions when a mesechta name finds no shiurim.",
@@ -522,28 +523,34 @@ class App:
         self.worker_count = WORKERS
         actions = ttk.Frame(f, padding=(0, 3, 0, 10))
         actions.grid(row=5, column=0, sticky="ew")
+        top_row = ttk.Frame(actions)
+        top_row.pack(fill="x")
         self.start_btn = ttk.Button(
-            actions, text="Start download", style="Gold.TButton",
+            top_row, text="Start download", style="Gold.TButton",
             command=self.start)
         self.start_btn.pack(side="left")
         self.stop_btn = ttk.Button(
-            actions, text="Stop", command=self.stop.set, state="disabled")
+            top_row, text="Stop", command=self.stop.set, state="disabled")
         self.stop_btn.pack(side="left", padx=(8, 8))
-        ttk.Button(actions, text="Open folder", command=self.open_folder).pack(side="left", padx=(0, 13))
-        ttk.Button(actions, text="Test connection",
-                   command=lambda: threading.Thread(
-                       target=self.test_connection,
-                       kwargs={"skip_ssl": self.skip_ssl.get()}, daemon=True).start()
-                   ).pack(side="left", padx=(0, 13))
-        ttk.Checkbutton(actions, text="Skip SSL check (proxy)",
-                        variable=self.skip_ssl).pack(side="left")
+        ttk.Button(top_row, text="Open folder", command=self.open_folder).pack(side="left")
         ttk.Button(
-            actions, text="Check for updates",
+            top_row, text="Check for updates",
             command=lambda: threading.Thread(
                 target=self.update_check,
                 kwargs={"manual": True, "skip_ssl": self.skip_ssl.get()},
                 daemon=True).start()
         ).pack(side="right")
+
+        # second row: connection tools, so the first row always fits the window
+        tools_row = ttk.Frame(actions, padding=(0, 6, 0, 0))
+        tools_row.pack(fill="x")
+        ttk.Button(tools_row, text="Test connection",
+                   command=lambda: threading.Thread(
+                       target=self.test_connection,
+                       kwargs={"skip_ssl": self.skip_ssl.get()}, daemon=True).start()
+                   ).pack(side="left")
+        ttk.Checkbutton(tools_row, text="Skip SSL check (proxy)",
+                        variable=self.skip_ssl).pack(side="left", padx=(13, 0))
 
         # Progress and status
         progress_section = ttk.Frame(f, padding=(0, 3, 0, 8))
