@@ -1,7 +1,7 @@
 """AllDaf Shiur Downloader: download every shiur by one speaker on one mesechta.
 Files go to <folder>\\<speaker>\\<mesechta>\\. Needs only Python 3. Run:  python alldaf_downloader.py
 """
-import difflib, hashlib, json, os, queue, re, shutil, ssl, subprocess, sys, threading, time
+import difflib, hashlib, json, os, queue, re, shutil, ssl, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.parse, urllib.request, webbrowser
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -12,12 +12,15 @@ API = "https://alldaf.org/api/trpc/posts.fetchList"
 SEARCH_API = "https://alldaf.org/api/trpc/opensearch.all"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 SSL_CTX = None  # set from the checkbox before each run
-VERSION = "1.13"  # bump this (and the release tag) when you publish a new .exe
+VERSION = "1.14"  # bump this (and the release tag) when you publish a new .exe
 REPO = "ygb4520-cmd/alldaf-downloader"
 CONFIG = Path.home() / ".alldaf_downloader.json"
 RETRIES = 5          # attempts for each network request
 WORKERS = 3          # shiurim downloaded at the same time (the default; changeable in the window)
 LOG_FILE = Path.home() / "alldaf_downloader.log"  # activity log, kept between runs
+BENCH_FILES = 6                 # shiurim used in each speed test
+BENCH_ORDER = [1, 3, 5, 2, 4]   # settings to test, in this order (mixed to reduce server caching bias)
+BENCH_TOLERANCE = 0.10          # a setting within 10% of the fastest counts as "as fast"
 API_MSG = ("alldaf.org sent back something unexpected, so the site may have changed. "
            "Try 'Check for updates'; if you are up to date, the downloader needs a fix.")
 
@@ -44,6 +47,7 @@ DEFAULT_SPEAKERS = [{"name": "Rabbi Zecharia Resnik", "id": 133821}]
 
 # Shown in the "What's new" window. Newest first. Add an entry for each release.
 CHANGELOG = [
+    ("1.14", ["Auto-test speed button: tries 1 to 5 parallel downloads on a sample and sets the best one."]),
     ("1.13", ["Buttons split into two rows, so Check for updates is no longer cut off."]),
     ("1.12", [
         "Test connection button: checks alldaf.org and GitHub and explains secure-connection problems.",
@@ -290,6 +294,17 @@ def estimate_bytes(url):
         return int(r.headers.get("Content-Length") or 0)
 
 
+def recommend_workers(results):
+    """Lowest setting that is within BENCH_TOLERANCE of the fastest clean run and had no retries."""
+    clean = [r for r in results if r["failed"] == 0]
+    if not clean:
+        return WORKERS
+    calm = [r for r in clean if r["retries"] == 0] or clean  # prefer runs the server didn't push back on
+    fastest = min(r["secs"] for r in calm)
+    ok = [r for r in calm if r["secs"] <= fastest * (1 + BENCH_TOLERANCE)]
+    return min(r["w"] for r in ok)
+
+
 def set_window_icon(root):
     try:
         img = tk.PhotoImage(file=str(resource_path("icon.png")))
@@ -521,6 +536,7 @@ class App:
         self.skip_ssl = tk.BooleanVar(value=self.cfg.get("skip_ssl", False))
         self.workers = tk.IntVar(value=max(1, min(5, int(self.cfg.get("workers", WORKERS)))))
         self.worker_count = WORKERS
+        self.retry_count = 0  # how many times a request has been retried, used by the speed test
         actions = ttk.Frame(f, padding=(0, 3, 0, 10))
         actions.grid(row=5, column=0, sticky="ew")
         top_row = ttk.Frame(actions)
@@ -549,6 +565,8 @@ class App:
                        target=self.test_connection,
                        kwargs={"skip_ssl": self.skip_ssl.get()}, daemon=True).start()
                    ).pack(side="left")
+        self.bench_btn = ttk.Button(tools_row, text="Auto-test speed", command=self.auto_test)
+        self.bench_btn.pack(side="left", padx=(13, 0))
         ttk.Checkbutton(tools_row, text="Skip SSL check (proxy)",
                         variable=self.skip_ssl).pack(side="left", padx=(13, 0))
 
@@ -616,6 +634,7 @@ class App:
             except Exception as e:
                 if attempt == RETRIES or self.stop.is_set():
                     raise
+                self.retry_count += 1
                 self.say(f"Connection problem while {label} ({e}). Retrying in {delay}s "
                          f"(attempt {attempt + 1} of {RETRIES})...")
                 for _ in range(delay * 10):
@@ -863,6 +882,70 @@ class App:
         self.bar["value"] = 0
         args = (spk["id"], spk["name"], mas, self.mode.get(), Path(self.folder.get()).expanduser(), dafs)
         threading.Thread(target=self.worker, args=args, daemon=True).start()
+
+    # ---------- speed test ----------
+    def auto_test(self):
+        if self.busy:
+            messagebox.showinfo("Auto-test speed", "Wait for the current download to finish first.")
+            return
+        spk = next((s for s in self.cfg["speakers"] if s["name"] == self.speaker.get()), None)
+        mas = self.masechta()
+        if not spk or not mas:
+            messagebox.showwarning("Auto-test speed", "Choose a speaker and a mesechta first. The test uses "
+                                   "that mesechta's shiurim.")
+            return
+        if not messagebox.askyesno("Auto-test speed",
+                                   f"This downloads {BENCH_FILES} shiurim {len(BENCH_ORDER)} times, which can be "
+                                   "a few hundred MB in total. The files go to a temporary folder and are deleted "
+                                   "afterwards. Continue?"):
+            return
+        global SSL_CTX
+        SSL_CTX = make_ctx(self.skip_ssl.get())
+        self.stop.clear()
+        self.busy = True
+        self.start_btn.config(state="disabled")
+        self.bench_btn.config(state="disabled")
+        self.bar["value"] = 0
+        threading.Thread(target=self.run_auto_test, args=(spk["id"], mas), daemon=True).start()
+
+    def run_auto_test(self, author_id, masechta):
+        results, note = [], ""
+        tmp = Path(tempfile.mkdtemp(prefix="alldaf_speedtest_"))
+        try:
+            recs = [r for r in self.fetch(author_id, masechta) if r.get("s3Url")]
+            sample = recs[:BENCH_FILES]
+            if len(sample) < 3:
+                note = "Need at least 3 shiurim on this mesechta to test. Choose one with more shiurim."
+            else:
+                for step, w in enumerate(BENCH_ORDER, 1):
+                    if self.stop.is_set():
+                        break
+                    self.q.put(("progress", (step - 1) / len(BENCH_ORDER) * 100,
+                                f"Testing {w} at a time ({step} of {len(BENCH_ORDER)})...", ""))
+                    before, failed = self.retry_count, []
+
+                    def fetch_one(item, w=w):
+                        i, r = item
+                        path = tmp / f"{w}_{i}.mp3"
+                        try:
+                            if not self.retry(lambda: self.download(r["s3Url"], path, lambda f: None),
+                                              "speed test"):
+                                failed.append(path.name)
+                        except Exception:
+                            failed.append(path.name)
+
+                    t0 = time.monotonic()
+                    with ThreadPoolExecutor(w) as ex:
+                        list(ex.map(fetch_one, enumerate(sample)))
+                    results.append({"w": w, "secs": time.monotonic() - t0,
+                                    "retries": self.retry_count - before, "failed": len(failed)})
+                    for p in tmp.glob(f"{w}_*"):
+                        p.unlink(missing_ok=True)
+        except Exception as e:
+            note = f"The speed test stopped: {e}"
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        self.q.put(("bench_done", results, note))
 
     def say(self, text):
         self.q.put(("log", text))
@@ -1117,6 +1200,29 @@ class App:
                 env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
                 subprocess.Popen([sys.executable], env=env)
                 self.close()
+            elif kind == "bench_done":
+                results, note = a
+                self.busy = False
+                self.start_btn.config(state="normal")
+                self.bench_btn.config(state="normal")
+                self.bar["value"] = 0
+                self.status.set("Ready")
+                self.current.set("")
+                if note or not results:
+                    messagebox.showinfo("Auto-test speed", note or "The test didn't finish. Try again.")
+                else:
+                    best = recommend_workers(results)
+                    self.workers.set(best)
+                    self.save_cfg()
+                    lines = []
+                    for r in results:
+                        extra = (f", {r['retries']} retries" if r["retries"] else "") + \
+                                (f", {r['failed']} failed" if r["failed"] else "")
+                        lines.append(f"{r['w']} at a time: {r['secs']:.0f} s{extra}")
+                    write_log("Speed test: " + "; ".join(lines) + f"; set to {best}")
+                    messagebox.showinfo("Auto-test speed",
+                                        "Results:\n" + "\n".join(lines) +
+                                        f"\n\nSet to {best} at a time. You can change it any time.")
             elif kind == "info":
                 messagebox.showinfo(a[0], a[1])
             elif kind == "notice":
