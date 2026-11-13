@@ -12,7 +12,7 @@ API = "https://alldaf.org/api/trpc/posts.fetchList"
 SEARCH_API = "https://alldaf.org/api/trpc/opensearch.all"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 SSL_CTX = None  # set from the checkbox before each run
-VERSION = "1.14"  # bump this (and the release tag) when you publish a new .exe
+VERSION = "1.15"  # bump this (and the release tag) when you publish a new .exe
 REPO = "ygb4520-cmd/alldaf-downloader"
 CONFIG = Path.home() / ".alldaf_downloader.json"
 RETRIES = 5          # attempts for each network request
@@ -21,6 +21,8 @@ LOG_FILE = Path.home() / "alldaf_downloader.log"  # activity log, kept between r
 BENCH_FILES = 6                 # shiurim used in each speed test
 BENCH_ORDER = [1, 3, 5, 2, 4]   # settings to test, in this order (mixed to reduce server caching bias)
 BENCH_TOLERANCE = 0.10          # a setting within 10% of the fastest counts as "as fast"
+SPEED_MIN, SPEED_MAX, SPEED_STEP = 1.0, 2.5, 0.1  # playback speed slider range
+NO_WINDOW = 0x08000000 if sys.platform.startswith("win") else 0  # hide the ffmpeg console window
 API_MSG = ("alldaf.org sent back something unexpected, so the site may have changed. "
            "Try 'Check for updates'; if you are up to date, the downloader needs a fix.")
 
@@ -47,6 +49,10 @@ DEFAULT_SPEAKERS = [{"name": "Rabbi Zecharia Resnik", "id": 133821}]
 
 # Shown in the "What's new" window. Newest first. Add an entry for each release.
 CHANGELOG = [
+    ("1.15", ["Playback speed slider (1.00x to 2.50x): saves a faster copy of each shiur in a Fast folder. "
+              "Make faster copies... makes them for this mesechta, all of a speaker's shiurim, or files you pick, "
+              "including shiurim you already downloaded. Needs ffmpeg, installed once with: "
+              "winget install Gyan.FFmpeg."]),
     ("1.14", ["Auto-test speed button: tries 1 to 5 parallel downloads on a sample and sets the best one."]),
     ("1.13", ["Buttons split into two rows, so Check for updates is no longer cut off."]),
     ("1.12", [
@@ -294,6 +300,29 @@ def estimate_bytes(url):
         return int(r.headers.get("Content-Length") or 0)
 
 
+def snap_speed(v):
+    """Clamp to the slider range and round to the nearest step, e.g. 1.2999999 -> 1.30."""
+    v = min(SPEED_MAX, max(SPEED_MIN, float(v)))
+    return round(round(v / SPEED_STEP) * SPEED_STEP, 2)
+
+
+def speed_text(v):
+    return "Normal" if v <= 1.0 else f"{v:.2f}x"
+
+
+def speed_up(src, dst, factor):
+    """Write a faster copy with ffmpeg; the pitch stays the same. ffmpeg's tempo filter only goes up to 2x in
+    one step, so anything faster is chained: 2.0 then the rest."""
+    if factor <= 2.0:
+        tempo = f"atempo={factor:.2f}"
+    else:
+        tempo = f"atempo=2.0,atempo={factor / 2:.2f}"
+    r = subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(src), "-filter:a", tempo, "-vn", str(dst)],
+                       capture_output=True, creationflags=NO_WINDOW)
+    if r.returncode != 0:
+        raise RuntimeError(r.stderr.decode("utf-8", "replace").strip() or f"ffmpeg exit code {r.returncode}")
+
+
 def recommend_workers(results):
     """Lowest setting that is within BENCH_TOLERANCE of the fastest clean run and had no retries."""
     clean = [r for r in results if r["failed"] == 0]
@@ -535,6 +564,12 @@ class App:
         # Primary and secondary actions
         self.skip_ssl = tk.BooleanVar(value=self.cfg.get("skip_ssl", False))
         self.workers = tk.IntVar(value=max(1, min(5, int(self.cfg.get("workers", WORKERS)))))
+        try:
+            start_speed = snap_speed(self.cfg.get("speed", 1.0))
+        except (TypeError, ValueError):
+            start_speed = 1.0
+        self.speed = tk.DoubleVar(value=start_speed)
+        self.speed_text = tk.StringVar(value=speed_text(start_speed))
         self.worker_count = WORKERS
         self.retry_count = 0  # how many times a request has been retried, used by the speed test
         actions = ttk.Frame(f, padding=(0, 3, 0, 10))
@@ -588,6 +623,17 @@ class App:
         ttk.Label(progress_section, textvariable=self.current,
                   style="Muted.TLabel").grid(row=2, column=0,
                                              sticky="w", pady=(2, 0))
+        speed_row = ttk.Frame(progress_section)
+        speed_row.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        ttk.Label(speed_row, text="Playback speed", style="Field.TLabel").pack(side="left")
+        tk.Scale(speed_row, from_=SPEED_MIN, to=SPEED_MAX, resolution=SPEED_STEP, orient="horizontal",
+                 variable=self.speed, showvalue=False, length=300, command=self.on_speed_change,
+                 bg=CREAM, fg=INK, troughcolor="#e9dfc7", activebackground=GOLD, highlightthickness=0,
+                 bd=0, sliderlength=18, width=12).pack(side="left", padx=10)
+        ttk.Label(speed_row, textvariable=self.speed_text, style="Status.TLabel",
+                  width=9).pack(side="left")
+        ttk.Button(speed_row, text="Make faster copies...",
+                   command=self.faster_copies_dialog).pack(side="right")
 
         # Read-only activity log
         log_header = ttk.Frame(f)
@@ -703,6 +749,10 @@ class App:
     # ---------- settings ----------
     def save_cfg(self):
         self.cfg["folder"] = self.folder.get()
+        try:
+            self.cfg["speed"] = snap_speed(self.speed.get())
+        except (tk.TclError, ValueError):
+            pass
         try:
             self.cfg["workers"] = max(1, min(5, int(self.workers.get())))
         except (tk.TclError, ValueError):
@@ -866,6 +916,13 @@ class App:
         except ValueError as e:
             messagebox.showwarning("Dapim", str(e))
             return
+        factor = snap_speed(self.speed.get())
+        if factor > 1.0 and not shutil.which("ffmpeg"):
+            messagebox.showwarning("Playback speed",
+                                   "Faster copies need ffmpeg, which is installed once with:\n\n"
+                                   "winget install Gyan.FFmpeg\n\n"
+                                   "Then close and reopen the program. Or set Playback speed back to Normal.")
+            return
         self.remember_masechta(mas)
         try:
             self.worker_count = max(1, min(5, int(self.workers.get())))
@@ -880,7 +937,8 @@ class App:
         self.start_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
         self.bar["value"] = 0
-        args = (spk["id"], spk["name"], mas, self.mode.get(), Path(self.folder.get()).expanduser(), dafs)
+        args = (spk["id"], spk["name"], mas, self.mode.get(), Path(self.folder.get()).expanduser(), dafs,
+                speed_text(factor), factor)
         threading.Thread(target=self.worker, args=args, daemon=True).start()
 
     # ---------- speed test ----------
@@ -946,6 +1004,125 @@ class App:
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
         self.q.put(("bench_done", results, note))
+
+    # ---------- faster copies for shiurim already downloaded ----------
+    def faster_copies_dialog(self):
+        if self.busy:
+            messagebox.showinfo("Faster copies", "Wait for the current download to finish first.")
+            return
+        win = tk.Toplevel(self.root)
+        win.title("Make faster copies")
+        win.configure(bg=CREAM)
+        win.transient(self.root)
+        win.resizable(False, False)
+        frm = ttk.Frame(win, padding=16)
+        frm.pack(fill="both", expand=True)
+
+        ttk.Label(frm, text="Playback speed", style="Field.TLabel").grid(row=0, column=0, sticky="w")
+        speed_var = tk.DoubleVar(value=snap_speed(self.speed.get()))
+        shown = tk.StringVar(value=speed_text(snap_speed(speed_var.get())))
+
+        def on_move(_=None):
+            shown.set(speed_text(snap_speed(speed_var.get())))
+
+        tk.Scale(frm, from_=SPEED_MIN, to=SPEED_MAX, resolution=SPEED_STEP, orient="horizontal",
+                 variable=speed_var, showvalue=False, length=260, command=on_move,
+                 bg=CREAM, fg=INK, troughcolor="#e9dfc7", activebackground=GOLD, highlightthickness=0,
+                 bd=0, sliderlength=18, width=12).grid(row=0, column=1, padx=10)
+        ttk.Label(frm, textvariable=shown, style="Status.TLabel", width=9).grid(row=0, column=2)
+
+        ttk.Label(frm, text="Which shiurim", style="Field.TLabel").grid(row=1, column=0, sticky="nw", pady=(14, 0))
+        scope = tk.StringVar(value="mesechta")
+        spk_name = self.speaker.get()
+        mas = self.masechta()
+        options = [
+            ("mesechta", f"This mesechta ({mas or 'none selected'})"),
+            ("speaker", f"All of {spk_name or 'this speaker'}'s downloaded shiurim"),
+            ("files", "Specific files I pick"),
+        ]
+        for i, (value, text) in enumerate(options):
+            ttk.Radiobutton(frm, text=text, value=value, variable=scope).grid(
+                row=1 + i, column=1, columnspan=2, sticky="w", pady=2)
+
+        def on_go():
+            factor = snap_speed(speed_var.get())
+            if factor <= 1.0:
+                messagebox.showwarning("Faster copies", "Move the slider above Normal first.", parent=win)
+                return
+            if not shutil.which("ffmpeg"):
+                messagebox.showwarning("Faster copies",
+                                       "Faster copies need ffmpeg, which is installed once with:\n\n"
+                                       "winget install Gyan.FFmpeg\n\nThen close and reopen the program.",
+                                       parent=win)
+                return
+            base = Path(self.folder.get()).expanduser()
+            which = scope.get()
+            if which == "mesechta":
+                if not spk_name or not mas:
+                    messagebox.showwarning("Faster copies", "Choose a speaker and a mesechta first.", parent=win)
+                    return
+                mdir = base / safe_name(spk_name) / safe_name(mas)
+                files = list(mdir.glob("*.mp3")) if mdir.exists() else []
+            elif which == "speaker":
+                sdir = base / safe_name(spk_name) if spk_name else base
+                files = []
+                if sdir.exists():
+                    for p in sdir.rglob("*.mp3"):
+                        if not any(part.startswith("Fast ") for part in p.relative_to(sdir).parts):
+                            files.append(p)
+            else:
+                picked = filedialog.askopenfilenames(parent=win, initialdir=str(base), title="Choose shiurim",
+                                                     filetypes=[("MP3 files", "*.mp3")])
+                files = [Path(x) for x in picked]
+            files = sorted(files)
+            if not files:
+                messagebox.showinfo("Faster copies", "No shiurim found for that choice.", parent=win)
+                return
+            win.destroy()
+            self.start_faster_copies(files, factor, speed_text(factor))
+
+        buttons = ttk.Frame(frm)
+        buttons.grid(row=5, column=0, columnspan=3, sticky="e", pady=(16, 0))
+        ttk.Button(buttons, text="Cancel", command=win.destroy).pack(side="right")
+        ttk.Button(buttons, text="Make copies", style="Gold.TButton", command=on_go).pack(side="right", padx=(0, 8))
+
+    def start_faster_copies(self, files, factor, label):
+        self.stop.clear()
+        self.busy = True
+        self.start_btn.config(state="disabled")
+        self.stop_btn.config(state="normal")
+        self.bar["value"] = 0
+        self.root.title("AllDaf Shiur Downloader")
+        threading.Thread(target=self.run_faster_copies, args=(files, factor, label), daemon=True).start()
+
+    def run_faster_copies(self, files, factor, label):
+        made = skipped = failed = 0
+        total = len(files)
+        for n, src in enumerate(files, 1):
+            if self.stop.is_set():
+                break
+            dst = src.parent / f"Fast {label}" / src.name
+            self.q.put(("progress", (n - 1) / total * 100, f"Making faster copies {n} of {total} ({label})", src.name))
+            if dst.exists():
+                skipped += 1
+                continue
+            try:
+                dst.parent.mkdir(exist_ok=True)
+                speed_up(src, dst, factor)
+                made += 1
+            except Exception as e:
+                failed += 1
+                self.say(f"Speed-up failed for {src.name}: {e}")
+        summary = ("Stopped. " if self.stop.is_set() else "Done. ") + f"{made} faster copies made ({label})"
+        if skipped:
+            summary += f", {skipped} already existed"
+        if failed:
+            summary += f", {failed} failed"
+        write_log(summary)
+        self.q.put(("done", summary + "."))
+
+    def on_speed_change(self, _value=None):
+        self.speed_text.set(speed_text(snap_speed(self.speed.get())))
 
     def say(self, text):
         self.q.put(("log", text))
@@ -1032,7 +1209,8 @@ class App:
         os.replace(part, path)
         return True
 
-    def worker(self, author_id, speaker_name, masechta, mode, base_folder, dafs=(None, None)):
+    def worker(self, author_id, speaker_name, masechta, mode, base_folder, dafs=(None, None),
+               speed_label="Normal", factor=1.0):
         summary = "Finished."
         try:
             write_log(f"Run: {speaker_name} / {masechta} / {mode} / dapim {dafs}")
@@ -1147,6 +1325,26 @@ class App:
             if todo:
                 with ThreadPoolExecutor(self.worker_count) as ex:
                     list(ex.map(lambda t: run_one(*t), [(i, u, p) for i, (u, p, _) in enumerate(todo)]))
+            if factor > 1.0 and not self.stop.is_set():
+                pending = []
+                for _, path, legacy in jobs:
+                    src = path if path.exists() else legacy
+                    fast_dir = folder / f"Fast {speed_label}"
+                    if src.exists() and not (fast_dir / src.name).exists():
+                        pending.append((src, fast_dir / src.name))
+                if pending:
+                    fast_dir.mkdir(exist_ok=True)
+                for n, (src, dst) in enumerate(pending, 1):
+                    if self.stop.is_set():
+                        break
+                    self.q.put(("progress", (n - 1) / len(pending) * 100,
+                                f"Speeding up {n} of {len(pending)} ({speed_label})", src.name))
+                    try:
+                        speed_up(src, dst, factor)
+                    except Exception as e:
+                        self.say(f"Speed-up failed for {src.name}: {e}")
+                if pending and not self.stop.is_set():
+                    self.say(f"Faster copies ({speed_label}) are in {fast_dir}")
             summary = ("Stopped. " if self.stop.is_set() else "Done. ") + f"{st['finished']} downloaded"
             summary += f", {len(failed)} failed." if failed else "."
             if failed:
