@@ -12,7 +12,7 @@ API = "https://alldaf.org/api/trpc/posts.fetchList"
 SEARCH_API = "https://alldaf.org/api/trpc/opensearch.all"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 SSL_CTX = None  # set from the checkbox before each run
-VERSION = "1.15"  # bump this (and the release tag) when you publish a new .exe
+VERSION = "1.16"  # bump this (and the release tag) when you publish a new .exe
 REPO = "ygb4520-cmd/alldaf-downloader"
 CONFIG = Path.home() / ".alldaf_downloader.json"
 RETRIES = 5          # attempts for each network request
@@ -49,10 +49,13 @@ DEFAULT_SPEAKERS = [{"name": "Rabbi Zecharia Resnik", "id": 133821}]
 
 # Shown in the "What's new" window. Newest first. Add an entry for each release.
 CHANGELOG = [
+    ("1.16", ["Each download with a playback speed asks whether to keep both the normal and faster copies, "
+              "or only the faster ones (the normal file is deleted once its faster copy is made)."]),
     ("1.15", ["Playback speed slider (1.00x to 2.50x): saves a faster copy of each shiur in a Fast folder. "
-              "Make faster copies... makes them for this mesechta, all of a speaker's shiurim, or files you pick, "
-              "including shiurim you already downloaded. Needs ffmpeg, installed once with: "
-              "winget install Gyan.FFmpeg."]),
+              "Make faster copies... works on any mesechta (it offers to download one that isn't there yet), "
+              "all of a speaker's shiurim, or files you pick. Needs ffmpeg, installed once with: "
+              "winget install Gyan.FFmpeg.",
+              "The window can't be made smaller than its content, and the activity log keeps a steady size."]),
     ("1.14", ["Auto-test speed button: tries 1 to 5 parallel downloads on a sample and sets the best one."]),
     ("1.13", ["Buttons split into two rows, so Check for updates is no longer cut off."]),
     ("1.12", [
@@ -323,6 +326,12 @@ def speed_up(src, dst, factor):
         raise RuntimeError(r.stderr.decode("utf-8", "replace").strip() or f"ffmpeg exit code {r.returncode}")
 
 
+def count_downloaded(base, speaker, mesechta):
+    """How many .mp3 files are already saved for this speaker and mesechta (not counting Fast copies)."""
+    mdir = base / safe_name(speaker) / safe_name(mesechta)
+    return len(list(mdir.glob("*.mp3"))) if mdir.exists() else 0
+
+
 def recommend_workers(results):
     """Lowest setting that is within BENCH_TOLERANCE of the fastest clean run and had no retries."""
     clean = [r for r in results if r["failed"] == 0]
@@ -438,7 +447,7 @@ class App:
         f = ttk.Frame(root, padding=(16, 14, 16, 14))
         f.pack(fill="both", expand=True)
         f.columnconfigure(0, weight=1)
-        f.rowconfigure(8, weight=1)
+        f.rowconfigure(2, weight=1)  # the mesechta list takes extra height; the log keeps its size
 
         # Header
         banner = ttk.Frame(f, style="Banner.TFrame", padding=(18, 13))
@@ -657,6 +666,8 @@ class App:
         log_scroll.grid(row=0, column=1, sticky="ns")
         self.log.config(yscrollcommand=log_scroll.set)
 
+        root.update_idletasks()
+        root.minsize(root.winfo_reqwidth(), root.winfo_reqheight())  # never smaller than its content
         root.protocol("WM_DELETE_WINDOW", self.close)
         if self.cfg.get("seen_version") != VERSION:
             self.cfg["seen_version"] = VERSION
@@ -923,6 +934,11 @@ class App:
                                    "winget install Gyan.FFmpeg\n\n"
                                    "Then close and reopen the program. Or set Playback speed back to Normal.")
             return
+        keep = "both"
+        if factor > 1.0:
+            keep = self.ask_keep_mode()
+            if keep is None:
+                return
         self.remember_masechta(mas)
         try:
             self.worker_count = max(1, min(5, int(self.workers.get())))
@@ -938,7 +954,7 @@ class App:
         self.stop_btn.config(state="normal")
         self.bar["value"] = 0
         args = (spk["id"], spk["name"], mas, self.mode.get(), Path(self.folder.get()).expanduser(), dafs,
-                speed_text(factor), factor)
+                speed_text(factor), factor, keep)
         threading.Thread(target=self.worker, args=args, daemon=True).start()
 
     # ---------- speed test ----------
@@ -1010,6 +1026,8 @@ class App:
         if self.busy:
             messagebox.showinfo("Faster copies", "Wait for the current download to finish first.")
             return
+        base = Path(self.folder.get()).expanduser()
+        spk_name = self.speaker.get()
         win = tk.Toplevel(self.root)
         win.title("Make faster copies")
         win.configure(bg=CREAM)
@@ -1033,16 +1051,37 @@ class App:
 
         ttk.Label(frm, text="Which shiurim", style="Field.TLabel").grid(row=1, column=0, sticky="nw", pady=(14, 0))
         scope = tk.StringVar(value="mesechta")
-        spk_name = self.speaker.get()
-        mas = self.masechta()
         options = [
-            ("mesechta", f"This mesechta ({mas or 'none selected'})"),
+            ("mesechta", "A mesechta"),
             ("speaker", f"All of {spk_name or 'this speaker'}'s downloaded shiurim"),
             ("files", "Specific files I pick"),
         ]
         for i, (value, text) in enumerate(options):
             ttk.Radiobutton(frm, text=text, value=value, variable=scope).grid(
                 row=1 + i, column=1, columnspan=2, sticky="w", pady=2)
+
+        # mesechta picker: every mesechta, with the downloaded ones marked
+        pick = ttk.Frame(frm)
+        pick.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+        ttk.Label(pick, text="Pick a mesechta. Downloaded ones are marked.", style="Muted.TLabel").pack(anchor="w")
+        lb = tk.Listbox(pick, height=8, exportselection=False, activestyle="none", relief="flat",
+                        bg=PANEL, fg=INK, selectbackground=GOLD, selectforeground=BURGUNDY,
+                        highlightthickness=1, highlightbackground=GOLD, highlightcolor=GOLD,
+                        font=("Segoe UI", 10), width=42)
+        lb.pack(fill="x", pady=(4, 0))
+        for i, m in enumerate(MASECHTOS):
+            have = count_downloaded(base, spk_name, m) if spk_name else 0
+            lb.insert("end", f"{m}   ({have} downloaded)" if have else f"{m}   (not downloaded)")
+            if have:
+                lb.itemconfig(i, fg=BURGUNDY)
+
+        def on_scope(*_):
+            if scope.get() == "mesechta":
+                pick.grid()
+            else:
+                pick.grid_remove()
+
+        scope.trace_add("write", on_scope)
 
         def on_go():
             factor = snap_speed(speed_var.get())
@@ -1055,14 +1094,27 @@ class App:
                                        "winget install Gyan.FFmpeg\n\nThen close and reopen the program.",
                                        parent=win)
                 return
-            base = Path(self.folder.get()).expanduser()
+            label = speed_text(factor)
             which = scope.get()
             if which == "mesechta":
-                if not spk_name or not mas:
-                    messagebox.showwarning("Faster copies", "Choose a speaker and a mesechta first.", parent=win)
+                if not spk_name:
+                    messagebox.showwarning("Faster copies", "Choose a speaker first.", parent=win)
                     return
+                sel = lb.curselection()
+                if not sel:
+                    messagebox.showwarning("Faster copies", "Pick a mesechta from the list first.", parent=win)
+                    return
+                mas = MASECHTOS[sel[0]]
                 mdir = base / safe_name(spk_name) / safe_name(mas)
-                files = list(mdir.glob("*.mp3")) if mdir.exists() else []
+                files = sorted(mdir.glob("*.mp3")) if mdir.exists() else []
+                if not files:
+                    if messagebox.askyesno(
+                            "Not downloaded",
+                            f"{mas} hasn't been downloaded for {spk_name} yet.\n\n"
+                            f"Download it now and make faster copies at {label}?", parent=win):
+                        win.destroy()
+                        self.start_download_with_speed(mas, factor, label)
+                    return
             elif which == "speaker":
                 sdir = base / safe_name(spk_name) if spk_name else base
                 files = []
@@ -1079,12 +1131,69 @@ class App:
                 messagebox.showinfo("Faster copies", "No shiurim found for that choice.", parent=win)
                 return
             win.destroy()
-            self.start_faster_copies(files, factor, speed_text(factor))
+            self.start_faster_copies(files, factor, label)
 
         buttons = ttk.Frame(frm)
         buttons.grid(row=5, column=0, columnspan=3, sticky="e", pady=(16, 0))
         ttk.Button(buttons, text="Cancel", command=win.destroy).pack(side="right")
         ttk.Button(buttons, text="Make copies", style="Gold.TButton", command=on_go).pack(side="right", padx=(0, 8))
+
+    def ask_keep_mode(self):
+        """Ask whether to keep both the normal and faster copies. Returns 'both', 'fast', or None if cancelled."""
+        win = tk.Toplevel(self.root)
+        win.title("Keep which copies?")
+        win.configure(bg=CREAM)
+        win.transient(self.root)
+        win.resizable(False, False)
+        result = {"value": None}
+
+        def choose(value):
+            result["value"] = value
+            win.destroy()
+
+        frm = ttk.Frame(win, padding=18)
+        frm.pack(fill="both", expand=True)
+        ttk.Label(frm, text="Keep which copies?", style="Field.TLabel").pack(anchor="w")
+        ttk.Label(frm, justify="left", style="Muted.TLabel",
+                  text="Keep both: the normal shiurim and the faster copies (uses about twice the space).\n"
+                       "Only faster: each normal shiur is deleted once its faster copy is made.").pack(
+            anchor="w", pady=(6, 14))
+        buttons = ttk.Frame(frm)
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="Cancel", command=lambda: choose(None)).pack(side="right")
+        ttk.Button(buttons, text="Only faster", command=lambda: choose("fast")).pack(side="right", padx=(0, 8))
+        ttk.Button(buttons, text="Keep both", style="Gold.TButton",
+                   command=lambda: choose("both")).pack(side="right", padx=(0, 8))
+        win.protocol("WM_DELETE_WINDOW", lambda: choose(None))
+        win.grab_set()
+        self.root.wait_window(win)
+        return result["value"]
+
+    def start_download_with_speed(self, mas, factor, label):
+        """Download one mesechta and make its faster copies as part of the same run."""
+        keep = self.ask_keep_mode()
+        if keep is None:
+            return
+        spk = next((s for s in self.cfg["speakers"] if s["name"] == self.speaker.get()), None)
+        if not spk:
+            return
+        try:
+            dafs = parse_daf_range(self.daf_from.get(), self.daf_to.get())
+        except ValueError as e:
+            messagebox.showwarning("Dapim", str(e))
+            return
+        self.save_cfg()
+        global SSL_CTX
+        SSL_CTX = make_ctx(self.skip_ssl.get())
+        self.stop.clear()
+        self.busy = True
+        self.start_btn.config(state="disabled")
+        self.stop_btn.config(state="normal")
+        self.bar["value"] = 0
+        self.root.title("AllDaf Shiur Downloader")
+        args = (spk["id"], spk["name"], mas, self.mode.get(), Path(self.folder.get()).expanduser(), dafs,
+                label, factor, keep)
+        threading.Thread(target=self.worker, args=args, daemon=True).start()
 
     def start_faster_copies(self, files, factor, label):
         self.stop.clear()
@@ -1120,6 +1229,13 @@ class App:
             summary += f", {failed} failed"
         write_log(summary)
         self.q.put(("done", summary + "."))
+
+    def drop_normal(self, src):
+        """Delete a normal shiur once its faster copy exists ('Only faster' runs)."""
+        try:
+            src.unlink()
+        except OSError as e:
+            self.say(f"Couldn't delete the normal copy {src.name}: {e}")
 
     def on_speed_change(self, _value=None):
         self.speed_text.set(speed_text(snap_speed(self.speed.get())))
@@ -1210,7 +1326,7 @@ class App:
         return True
 
     def worker(self, author_id, speaker_name, masechta, mode, base_folder, dafs=(None, None),
-               speed_label="Normal", factor=1.0):
+               speed_label="Normal", factor=1.0, keep="both"):
         summary = "Finished."
         try:
             write_log(f"Run: {speaker_name} / {masechta} / {mode} / dapim {dafs}")
@@ -1326,11 +1442,16 @@ class App:
                 with ThreadPoolExecutor(self.worker_count) as ex:
                     list(ex.map(lambda t: run_one(*t), [(i, u, p) for i, (u, p, _) in enumerate(todo)]))
             if factor > 1.0 and not self.stop.is_set():
+                fast_dir = folder / f"Fast {speed_label}"
                 pending = []
                 for _, path, legacy in jobs:
                     src = path if path.exists() else legacy
-                    fast_dir = folder / f"Fast {speed_label}"
-                    if src.exists() and not (fast_dir / src.name).exists():
+                    if not src.exists():
+                        continue
+                    if (fast_dir / src.name).exists():
+                        if keep == "fast":
+                            self.drop_normal(src)
+                    else:
                         pending.append((src, fast_dir / src.name))
                 if pending:
                     fast_dir.mkdir(exist_ok=True)
@@ -1343,6 +1464,9 @@ class App:
                         speed_up(src, dst, factor)
                     except Exception as e:
                         self.say(f"Speed-up failed for {src.name}: {e}")
+                        continue
+                    if keep == "fast":
+                        self.drop_normal(src)
                 if pending and not self.stop.is_set():
                     self.say(f"Faster copies ({speed_label}) are in {fast_dir}")
             summary = ("Stopped. " if self.stop.is_set() else "Done. ") + f"{st['finished']} downloaded"
