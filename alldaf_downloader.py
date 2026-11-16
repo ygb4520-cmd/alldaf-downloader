@@ -12,7 +12,7 @@ API = "https://alldaf.org/api/trpc/posts.fetchList"
 SEARCH_API = "https://alldaf.org/api/trpc/opensearch.all"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 SSL_CTX = None  # set from the checkbox before each run
-VERSION = "1.16"  # bump this (and the release tag) when you publish a new .exe
+VERSION = "1.17"  # bump this (and the release tag) when you publish a new .exe
 REPO = "ygb4520-cmd/alldaf-downloader"
 CONFIG = Path.home() / ".alldaf_downloader.json"
 RETRIES = 5          # attempts for each network request
@@ -49,6 +49,7 @@ DEFAULT_SPEAKERS = [{"name": "Rabbi Zecharia Resnik", "id": 133821}]
 
 # Shown in the "What's new" window. Newest first. Add an entry for each release.
 CHANGELOG = [
+    ("1.17", ["Faster copies show their speed in the file name, for example Pesachim 7 (1.50x).mp3."]),
     ("1.16", ["Each download with a playback speed asks whether to keep both the normal and faster copies, "
               "or only the faster ones (the normal file is deleted once its faster copy is made)."]),
     ("1.15", ["Playback speed slider (1.00x to 2.50x): saves a faster copy of each shiur in a Fast folder. "
@@ -311,6 +312,11 @@ def snap_speed(v):
 
 def speed_text(v):
     return "Normal" if v <= 1.0 else f"{v:.2f}x"
+
+
+def fast_name(src, label):
+    """File name for a faster copy, with the speed in parentheses: 'Pesachim 7.mp3' -> 'Pesachim 7 (1.50x).mp3'."""
+    return f"{src.stem} ({label}){src.suffix}"
 
 
 def speed_up(src, dst, factor):
@@ -1210,7 +1216,7 @@ class App:
         for n, src in enumerate(files, 1):
             if self.stop.is_set():
                 break
-            dst = src.parent / f"Fast {label}" / src.name
+            dst = src.parent / f"Fast {label}" / fast_name(src, label)
             self.q.put(("progress", (n - 1) / total * 100, f"Making faster copies {n} of {total} ({label})", src.name))
             if dst.exists():
                 skipped += 1
@@ -1448,11 +1454,11 @@ class App:
                     src = path if path.exists() else legacy
                     if not src.exists():
                         continue
-                    if (fast_dir / src.name).exists():
+                    if (fast_dir / fast_name(src, speed_label)).exists():
                         if keep == "fast":
                             self.drop_normal(src)
                     else:
-                        pending.append((src, fast_dir / src.name))
+                        pending.append((src, fast_dir / fast_name(src, speed_label)))
                 if pending:
                     fast_dir.mkdir(exist_ok=True)
                 for n, (src, dst) in enumerate(pending, 1):
