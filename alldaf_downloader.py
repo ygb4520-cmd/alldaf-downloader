@@ -12,7 +12,7 @@ API = "https://alldaf.org/api/trpc/posts.fetchList"
 SEARCH_API = "https://alldaf.org/api/trpc/opensearch.all"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 SSL_CTX = None  # set from the checkbox before each run
-VERSION = "1.17"  # bump this (and the release tag) when you publish a new .exe
+VERSION = "1.18"  # bump this (and the release tag) when you publish a new .exe
 REPO = "ygb4520-cmd/alldaf-downloader"
 CONFIG = Path.home() / ".alldaf_downloader.json"
 RETRIES = 5          # attempts for each network request
@@ -23,6 +23,7 @@ BENCH_ORDER = [1, 3, 5, 2, 4]   # settings to test, in this order (mixed to redu
 BENCH_TOLERANCE = 0.10          # a setting within 10% of the fastest counts as "as fast"
 SPEED_MIN, SPEED_MAX, SPEED_STEP = 1.0, 2.5, 0.1  # playback speed slider range
 NO_WINDOW = 0x08000000 if sys.platform.startswith("win") else 0  # hide the ffmpeg console window
+CONVERT_WORKERS = max(1, min(4, (os.cpu_count() or 2) - 1))  # faster copies made at the same time
 API_MSG = ("alldaf.org sent back something unexpected, so the site may have changed. "
            "Try 'Check for updates'; if you are up to date, the downloader needs a fix.")
 
@@ -49,6 +50,8 @@ DEFAULT_SPEAKERS = [{"name": "Rabbi Zecharia Resnik", "id": 133821}]
 
 # Shown in the "What's new" window. Newest first. Add an entry for each release.
 CHANGELOG = [
+    ("1.18", ["Faster copies are made in parallel (based on your CPU cores), and each one is made as soon as its "
+              "shiur finishes downloading, so less waiting at the end."]),
     ("1.17", ["Faster copies show their speed in the file name, for example Pesachim 7 (1.50x).mp3."]),
     ("1.16", ["Each download with a playback speed asks whether to keep both the normal and faster copies, "
               "or only the faster ones (the normal file is deleted once its faster copy is made)."]),
@@ -1210,29 +1213,51 @@ class App:
         self.root.title("AllDaf Shiur Downloader")
         threading.Thread(target=self.run_faster_copies, args=(files, factor, label), daemon=True).start()
 
-    def run_faster_copies(self, files, factor, label):
-        made = skipped = failed = 0
-        total = len(files)
-        for n, src in enumerate(files, 1):
+    def make_fast_copy(self, src, dst, factor, keep):
+        """Make one faster copy. Returns 'made', 'skipped' (it already existed) or 'failed'."""
+        if dst.exists():
+            if keep == "fast":
+                self.drop_normal(src)
+            return "skipped"
+        try:
+            dst.parent.mkdir(exist_ok=True)
+            speed_up(src, dst, factor)
+        except Exception as e:
+            self.say(f"Speed-up failed for {src.name}: {e}")
+            return "failed"
+        if keep == "fast":
+            self.drop_normal(src)
+        return "made"
+
+    def convert_pool(self, pairs, factor, keep, text):
+        """Make faster copies for (source, destination) pairs, several at a time. Returns the counts."""
+        total = len(pairs)
+        counts = {"made": 0, "skipped": 0, "failed": 0}
+        lock = threading.Lock()
+        done = [0]
+
+        def job(pair):
             if self.stop.is_set():
-                break
-            dst = src.parent / f"Fast {label}" / fast_name(src, label)
-            self.q.put(("progress", (n - 1) / total * 100, f"Making faster copies {n} of {total} ({label})", src.name))
-            if dst.exists():
-                skipped += 1
-                continue
-            try:
-                dst.parent.mkdir(exist_ok=True)
-                speed_up(src, dst, factor)
-                made += 1
-            except Exception as e:
-                failed += 1
-                self.say(f"Speed-up failed for {src.name}: {e}")
-        summary = ("Stopped. " if self.stop.is_set() else "Done. ") + f"{made} faster copies made ({label})"
-        if skipped:
-            summary += f", {skipped} already existed"
-        if failed:
-            summary += f", {failed} failed"
+                return
+            src, dst = pair
+            result = self.make_fast_copy(src, dst, factor, keep)
+            with lock:
+                counts[result] += 1
+                done[0] += 1
+                self.q.put(("progress", done[0] / total * 100, f"{text}: {done[0]} of {total}", src.name))
+
+        with ThreadPoolExecutor(CONVERT_WORKERS) as ex:
+            list(ex.map(job, pairs))
+        return counts
+
+    def run_faster_copies(self, files, factor, label):
+        pairs = [(src, src.parent / f"Fast {label}" / fast_name(src, label)) for src in files]
+        counts = self.convert_pool(pairs, factor, "both", f"Making faster copies ({label})")
+        summary = ("Stopped. " if self.stop.is_set() else "Done. ") + f"{counts['made']} faster copies made ({label})"
+        if counts["skipped"]:
+            summary += f", {counts['skipped']} already existed"
+        if counts["failed"]:
+            summary += f", {counts['failed']} failed"
         write_log(summary)
         self.q.put(("done", summary + "."))
 
@@ -1440,41 +1465,27 @@ class App:
                     elif not self.stop.is_set():
                         failed.append(path.name)
                         st["handled"] += 1
+                if ok and factor > 1.0 and not self.stop.is_set():
+                    # make this shiur's faster copy now, while the others are still downloading
+                    self.make_fast_copy(path, fast_dir / fast_name(path, speed_label), factor, keep)
                 if not ok and not self.stop.is_set():
                     self.say(f"Failed after {RETRIES} tries: {path.name} ({err})")
                 refresh()
 
+            fast_dir = folder / f"Fast {speed_label}"
             if todo:
                 with ThreadPoolExecutor(self.worker_count) as ex:
                     list(ex.map(lambda t: run_one(*t), [(i, u, p) for i, (u, p, _) in enumerate(todo)]))
             if factor > 1.0 and not self.stop.is_set():
-                fast_dir = folder / f"Fast {speed_label}"
-                pending = []
+                pairs = []
                 for _, path, legacy in jobs:
                     src = path if path.exists() else legacy
-                    if not src.exists():
-                        continue
-                    if (fast_dir / fast_name(src, speed_label)).exists():
-                        if keep == "fast":
-                            self.drop_normal(src)
-                    else:
-                        pending.append((src, fast_dir / fast_name(src, speed_label)))
-                if pending:
-                    fast_dir.mkdir(exist_ok=True)
-                for n, (src, dst) in enumerate(pending, 1):
-                    if self.stop.is_set():
-                        break
-                    self.q.put(("progress", (n - 1) / len(pending) * 100,
-                                f"Speeding up {n} of {len(pending)} ({speed_label})", src.name))
-                    try:
-                        speed_up(src, dst, factor)
-                    except Exception as e:
-                        self.say(f"Speed-up failed for {src.name}: {e}")
-                        continue
-                    if keep == "fast":
-                        self.drop_normal(src)
-                if pending and not self.stop.is_set():
-                    self.say(f"Faster copies ({speed_label}) are in {fast_dir}")
+                    if src.exists():
+                        pairs.append((src, fast_dir / fast_name(src, speed_label)))
+                if pairs:
+                    self.convert_pool(pairs, factor, keep, f"Speeding up ({speed_label})")
+                    if not self.stop.is_set():
+                        self.say(f"Faster copies ({speed_label}) are in {fast_dir}")
             summary = ("Stopped. " if self.stop.is_set() else "Done. ") + f"{st['finished']} downloaded"
             summary += f", {len(failed)} failed." if failed else "."
             if failed:
