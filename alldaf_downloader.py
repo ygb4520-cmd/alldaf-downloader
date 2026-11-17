@@ -12,7 +12,7 @@ API = "https://alldaf.org/api/trpc/posts.fetchList"
 SEARCH_API = "https://alldaf.org/api/trpc/opensearch.all"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 SSL_CTX = None  # set from the checkbox before each run
-VERSION = "1.18"  # bump this (and the release tag) when you publish a new .exe
+VERSION = "1.21"  # bump this (and the release tag) when you publish a new .exe
 REPO = "ygb4520-cmd/alldaf-downloader"
 CONFIG = Path.home() / ".alldaf_downloader.json"
 RETRIES = 5          # attempts for each network request
@@ -50,6 +50,12 @@ DEFAULT_SPEAKERS = [{"name": "Rabbi Zecharia Resnik", "id": 133821}]
 
 # Shown in the "What's new" window. Newest first. Add an entry for each release.
 CHANGELOG = [
+    ("1.21", ["Faster copies show the speed right after the English title, for example "
+              "Pesachim 121 (1.50x) פסחים דף קכא."]),
+    ("1.20", ["Faster copies keep the full title layout in their title tag, "
+              "like Pesachim 121 פסחים דף קכא."]),
+    ("1.19", ["Faster copies also carry the speed in their title tag, for example Pesachim 7 (1.50x), "
+              "so players show it too."]),
     ("1.18", ["Faster copies are made in parallel (based on your CPU cores), and each one is made as soon as its "
               "shiur finishes downloading, so less waiting at the end."]),
     ("1.17", ["Faster copies show their speed in the file name, for example Pesachim 7 (1.50x).mp3."]),
@@ -317,20 +323,64 @@ def speed_text(v):
     return "Normal" if v <= 1.0 else f"{v:.2f}x"
 
 
+HEBREW_MASECHTOS = {
+    "Berachos": "ברכות", "Shabbos": "שבת", "Eruvin": "עירובין", "Pesachim": "פסחים", "Yoma": "יומא",
+    "Sukkah": "סוכה", "Beitzah": "ביצה", "Rosh Hashanah": "ראש השנה", "Taanis": "תענית", "Megillah": "מגילה",
+    "Moed Katan": "מועד קטן", "Chagigah": "חגיגה", "Yevamos": "יבמות", "Kesubos": "כתובות", "Nedarim": "נדרים",
+    "Nazir": "נזיר", "Sotah": "סוטה", "Gitin": "גיטין", "Kidushin": "קידושין", "Bava Kama": "בבא קמא",
+    "Bava Metzia": "בבא מציעא", "Bava Basra": "בבא בתרא", "Sanhedrin": "סנהדרין", "Makos": "מכות",
+    "Shevuos": "שבועות", "Avodah Zarah": "עבודה זרה", "Horayos": "הוריות", "Zevachim": "זבחים",
+    "Menachos": "מנחות", "Chulin": "חולין", "Bechoros": "בכורות", "Erchin": "ערכין", "Temurah": "תמורה",
+    "Kerisos": "כריתות", "Meilah": "מעילה", "Tamid": "תמיד", "Nidah": "נידה",
+}
+
+
+def gematria(n):
+    """Hebrew letters for a number, e.g. 121 -> קכא, 15 -> טו, 16 -> טז (for daf numbers)."""
+    out = ""
+    for value, letter in ((400, "ת"), (300, "ש"), (200, "ר"), (100, "ק")):
+        while n >= value:
+            out += letter
+            n -= value
+    if n == 15:
+        return out + "טו"
+    if n == 16:
+        return out + "טז"
+    for value, letters in ((90, "צ"), (80, "פ"), (70, "ע"), (60, "ס"), (50, "נ"), (40, "מ"),
+                           (30, "ל"), (20, "כ"), (10, "י")):
+        if n >= value:
+            out += letters
+            n -= value
+    ones = "אבגדהוזחט"
+    return out + (ones[n - 1] if n else "")
+
+
+def title_with_speed(stem, label):
+    """'Pesachim 121' -> 'Pesachim 121 (1.50x) פסחים דף קכא', the alldaf.org layout with the speed after the English."""
+    m = re.match(r"^(.+?) (\d+)", stem)
+    if not m or m.group(1) not in HEBREW_MASECHTOS:
+        return f"{stem} ({label})"
+    mes, daf = m.group(1), int(m.group(2))
+    rest = stem[m.end():]  # e.g. " (Yerushalmi)" if there is one
+    return f"{mes} {daf} ({label}) {HEBREW_MASECHTOS[mes]} דף {gematria(daf)}{rest}"
+
+
 def fast_name(src, label):
     """File name for a faster copy, with the speed in parentheses: 'Pesachim 7.mp3' -> 'Pesachim 7 (1.50x).mp3'."""
     return f"{src.stem} ({label}){src.suffix}"
 
 
-def speed_up(src, dst, factor):
+def speed_up(src, dst, factor, title=None):
     """Write a faster copy with ffmpeg; the pitch stays the same. ffmpeg's tempo filter only goes up to 2x in
     one step, so anything faster is chained: 2.0 then the rest."""
     if factor <= 2.0:
         tempo = f"atempo={factor:.2f}"
     else:
         tempo = f"atempo=2.0,atempo={factor / 2:.2f}"
-    r = subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(src), "-filter:a", tempo, "-vn", str(dst)],
-                       capture_output=True, creationflags=NO_WINDOW)
+    cmd = ["ffmpeg", "-loglevel", "error", "-y", "-i", str(src), "-filter:a", tempo, "-vn"]
+    if title:
+        cmd += ["-metadata", f"title={title}"]  # the title players show, e.g. Pesachim 7 (1.50x)
+    r = subprocess.run(cmd + [str(dst)], capture_output=True, creationflags=NO_WINDOW)
     if r.returncode != 0:
         raise RuntimeError(r.stderr.decode("utf-8", "replace").strip() or f"ffmpeg exit code {r.returncode}")
 
@@ -1221,7 +1271,7 @@ class App:
             return "skipped"
         try:
             dst.parent.mkdir(exist_ok=True)
-            speed_up(src, dst, factor)
+            speed_up(src, dst, factor, title=title_with_speed(src.stem, speed_text(factor)))
         except Exception as e:
             self.say(f"Speed-up failed for {src.name}: {e}")
             return "failed"
