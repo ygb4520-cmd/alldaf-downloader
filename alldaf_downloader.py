@@ -12,7 +12,7 @@ API = "https://alldaf.org/api/trpc/posts.fetchList"
 SEARCH_API = "https://alldaf.org/api/trpc/opensearch.all"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 SSL_CTX = None  # set from the checkbox before each run
-VERSION = "1.21"  # bump this (and the release tag) when you publish a new .exe
+VERSION = "1.22"  # bump this (and the release tag) when you publish a new .exe
 REPO = "ygb4520-cmd/alldaf-downloader"
 CONFIG = Path.home() / ".alldaf_downloader.json"
 RETRIES = 5          # attempts for each network request
@@ -50,6 +50,7 @@ DEFAULT_SPEAKERS = [{"name": "Rabbi Zecharia Resnik", "id": 133821}]
 
 # Shown in the "What's new" window. Newest first. Add an entry for each release.
 CHANGELOG = [
+    ("1.22", ["Fixed a crash when a download ran before the window had finished setting up."]),
     ("1.21", ["Faster copies show the speed right after the English title, for example "
               "Pesachim 121 (1.50x) פסחים דף קכא."]),
     ("1.20", ["Faster copies keep the full title layout in their title tag, "
@@ -485,6 +486,12 @@ def apply_theme(root):
 
 
 class App:
+    # Defaults for values the download worker reads. They also apply when __init__ hasn't run (tests),
+    # so the worker never fails with a missing attribute.
+    worker_count = WORKERS
+    last_folder = None
+    busy = False
+
     def __init__(self, root):
         self.root, self.q, self.stop = root, queue.Queue(), threading.Event()
         self.busy, self.last_folder = False, None
