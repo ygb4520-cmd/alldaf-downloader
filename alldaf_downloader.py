@@ -12,12 +12,13 @@ API = "https://alldaf.org/api/trpc/posts.fetchList"
 SEARCH_API = "https://alldaf.org/api/trpc/opensearch.all"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 SSL_CTX = None  # set from the checkbox before each run
-VERSION = "1.21"  # bump this (and the release tag) when you publish a new .exe
+VERSION = "1.22"  # bump this (and the release tag) when you publish a new .exe
 REPO = "ygb4520-cmd/alldaf-downloader"
 CONFIG = Path.home() / ".alldaf_downloader.json"
 RETRIES = 5          # attempts for each network request
 WORKERS = 3          # shiurim downloaded at the same time (the default; changeable in the window)
 LOG_FILE = Path.home() / "alldaf_downloader.log"  # activity log, kept between runs
+FFMPEG_INSTALL_CMD = "winget install Gyan.FFmpeg"
 BENCH_FILES = 6                 # shiurim used in each speed test
 BENCH_ORDER = [1, 3, 5, 2, 4]   # settings to test, in this order (mixed to reduce server caching bias)
 BENCH_TOLERANCE = 0.10          # a setting within 10% of the fastest counts as "as fast"
@@ -50,6 +51,8 @@ DEFAULT_SPEAKERS = [{"name": "Rabbi Zecharia Resnik", "id": 133821}]
 
 # Shown in the "What's new" window. Newest first. Add an entry for each release.
 CHANGELOG = [
+    ("1.22", ["If ffmpeg (needed for faster copies) is missing, a short setup box shows the install command with "
+              "a Copy button instead of a plain warning."]),
     ("1.21", ["Faster copies show the speed right after the English title, for example "
               "Pesachim 121 (1.50x) פסחים דף קכא."]),
     ("1.20", ["Faster copies keep the full title layout in their title tag, "
@@ -987,11 +990,7 @@ class App:
             messagebox.showwarning("Dapim", str(e))
             return
         factor = snap_speed(self.speed.get())
-        if factor > 1.0 and not shutil.which("ffmpeg"):
-            messagebox.showwarning("Playback speed",
-                                   "Faster copies need ffmpeg, which is installed once with:\n\n"
-                                   "winget install Gyan.FFmpeg\n\n"
-                                   "Then close and reopen the program. Or set Playback speed back to Normal.")
+        if factor > 1.0 and not self.have_ffmpeg("Or set Playback speed back to Normal."):
             return
         keep = "both"
         if factor > 1.0:
@@ -1147,11 +1146,7 @@ class App:
             if factor <= 1.0:
                 messagebox.showwarning("Faster copies", "Move the slider above Normal first.", parent=win)
                 return
-            if not shutil.which("ffmpeg"):
-                messagebox.showwarning("Faster copies",
-                                       "Faster copies need ffmpeg, which is installed once with:\n\n"
-                                       "winget install Gyan.FFmpeg\n\nThen close and reopen the program.",
-                                       parent=win)
+            if not self.have_ffmpeg(parent=win):
                 return
             label = speed_text(factor)
             which = scope.get()
@@ -1320,6 +1315,42 @@ class App:
 
     def on_speed_change(self, _value=None):
         self.speed_text.set(speed_text(snap_speed(self.speed.get())))
+
+    def have_ffmpeg(self, extra="", parent=None):
+        """True if ffmpeg is installed. If not, show a one-time-setup box with the install command and a
+        Copy button, and return False."""
+        if shutil.which("ffmpeg"):
+            return True
+        parent = parent or self.root
+        win = tk.Toplevel(parent)
+        win.title("One-time setup: ffmpeg")
+        win.configure(bg=CREAM)
+        win.transient(parent)
+        win.resizable(False, False)
+        ttk.Label(win, text="Faster copies need a free helper program called ffmpeg.", style="Field.TLabel",
+                  wraplength=420).pack(anchor="w", padx=16, pady=(14, 4))
+        ttk.Label(win, text="Install it once: open the Start menu, type  cmd  and press Enter, then paste "
+                  "the line below and press Enter. When it finishes, close and reopen this program."
+                  + (f"\n\n{extra}" if extra else ""), wraplength=420, justify="left").pack(anchor="w", padx=16)
+        cmd = tk.StringVar(value=FFMPEG_INSTALL_CMD)
+        box = ttk.Frame(win)
+        box.pack(fill="x", padx=16, pady=12)
+        box.columnconfigure(0, weight=1)
+        ttk.Entry(box, textvariable=cmd, state="readonly").grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        copy_btn = ttk.Button(box, text="Copy", style="Gold.TButton")
+        copy_btn.grid(row=0, column=1)
+
+        def copy():
+            self.root.clipboard_clear()
+            self.root.clipboard_append(FFMPEG_INSTALL_CMD)
+            copy_btn.config(text="Copied!")
+
+        copy_btn.config(command=copy)
+        ttk.Button(win, text="Close", command=win.destroy).pack(anchor="e", padx=16, pady=(0, 14))
+        win.bind("<Escape>", lambda e: win.destroy())
+        win.grab_set()
+        parent.wait_window(win)
+        return False
 
     def say(self, text):
         self.q.put(("log", text))
