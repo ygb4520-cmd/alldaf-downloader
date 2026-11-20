@@ -34,6 +34,7 @@ class H(http.server.BaseHTTPRequestHandler):
 def make_app():
     a = ad.App.__new__(ad.App)
     a.q, a.stop, a.busy, a.last_folder = queue.Queue(), threading.Event(), False, None
+    a.worker_count, a.retry_count = 3, 0
     return a
 
 
