@@ -24,6 +24,20 @@ Downloads run 3 at a time, and a dropped connection or **Stop** is continued fro
 
 Only tick **Skip SSL check** if a work/school proxy breaks secure connections. It is off by default.
 
+## Project layout
+
+`alldaf_downloader.py` is just the launcher. The code lives in the `alldaf/` folder:
+
+| File | What's in it |
+| --- | --- |
+| `config.py` | version, settings, colors, mesechta list, what's-new list |
+| `util.py` | small helpers: filenames, daf numbers and ranges, titles, activity log |
+| `net.py` | alldaf.org search, GitHub update check and the self-updater |
+| `audio.py` | ffmpeg faster copies |
+| `theme.py` | window look, icon, taskbar flash |
+| `app.py` | the main window |
+| `speakers.py`, `updates.py`, `downloads.py`, `speedtest.py`, `faster.py` | the window's features, one file each |
+
 ## Developing
 
 ```

@@ -2,7 +2,7 @@
 import http.server, pathlib, queue, sys, tempfile, threading, unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
-import alldaf_downloader as ad
+from alldaf import app, net
 
 DATA = {f"/{i}.mp3": bytes([i]) * (300_000 + i) for i in range(6)}
 CUT = {"on": False}
@@ -32,7 +32,7 @@ class H(http.server.BaseHTTPRequestHandler):
 
 
 def make_app():
-    a = ad.App.__new__(ad.App)
+    a = app.App.__new__(app.App)
     a.q, a.stop, a.busy, a.last_folder = queue.Queue(), threading.Event(), False, None
     a.worker_count, a.retry_count = 3, 0
     return a
@@ -97,10 +97,10 @@ class Download(unittest.TestCase):
     def test_api_shape_check(self):
         app = make_app()
         app.get_page = lambda inp: {"records": [{"nope": 1}], "total": 1}
-        with self.assertRaises(ad.ApiChanged):
+        with self.assertRaises(net.ApiChanged):
             app.fetch(1, "Berachos")
         app.get_page = lambda inp: ["not a dict"]
-        with self.assertRaises(ad.ApiChanged):
+        with self.assertRaises(net.ApiChanged):
             app.fetch(1, "Berachos")
 
 
