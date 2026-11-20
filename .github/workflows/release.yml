@@ -21,7 +21,7 @@ jobs:
         shell: pwsh
         run: |
           $v = "${{ github.event.release.tag_name }}".TrimStart('v')
-          (Get-Content alldaf_downloader.py -Raw) -replace '(?m)^VERSION = .*$', "VERSION = `"$v`"" | Set-Content alldaf_downloader.py -Encoding utf8
+          (Get-Content alldaf/config.py -Raw) -replace '(?m)^VERSION = .*$', "VERSION = `"$v`"" | Set-Content alldaf/config.py -Encoding utf8
 
       - name: Install PyInstaller
         run: python -m pip install pyinstaller==6.11.1
